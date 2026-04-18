@@ -158,13 +158,40 @@ app.post("/conversation/turn", async (req, res) => {
       content: assistantText
     });
 
-    res.json({
-      assistant_text: assistantText,
-      corrected_user_text: null,
-      pronunciation_tip: null,
-      audio_base64: null
-    });
+    // ===============================
+// TTS (voix IA)
+// ===============================
 
+let audioBase64 = null;
+
+try {
+  const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini-tts",
+      voice: "alloy",
+      input: assistantText
+    })
+  });
+
+  const audioBuffer = await ttsResponse.arrayBuffer();
+  audioBase64 = Buffer.from(audioBuffer).toString("base64");
+
+} catch (e) {
+  console.log("TTS error:", e);
+}
+
+// Réponse finale
+res.json({
+  assistant_text: assistantText,
+  corrected_user_text: null,
+  pronunciation_tip: null,
+  audio_base64: audioBase64
+});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
