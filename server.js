@@ -74,6 +74,101 @@ app.post("/chat", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
+// ===============================
+// REAL TALK - CONVERSATION MODE
+// ===============================
+
+const conversations = {}; // mémoire simple
+
+function generateSessionId() {
+  return Math.random().toString(36).substring(2, 10);
+}
+
+// START CONVERSATION
+app.post("/conversation/start", async (req, res) => {
+  try {
+    const sessionId = generateSessionId();
+
+    conversations[sessionId] = [
+      {
+        role: "system",
+        content: "You are a friendly English conversation partner. Be natural, expressive, short, and engaging. React like a real person."
+      }
+    ];
+
+    const firstMessage = "Hi! How are you today? What did you do today?";
+
+    conversations[sessionId].push({
+      role: "assistant",
+      content: firstMessage
+    });
+
+    res.json({
+      session_id: sessionId,
+      assistant_text: firstMessage,
+      audio_base64: null
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// TURN CONVERSATION
+app.post("/conversation/turn", async (req, res) => {
+  try {
+    const { session_id, transcript } = req.body;
+
+    if (!session_id || !transcript) {
+      return res.status(400).json({ error: "Missing data" });
+    }
+
+    if (!conversations[session_id]) {
+      return res.status(400).json({ error: "Invalid session" });
+    }
+
+    // Ajouter message user
+    conversations[session_id].push({
+      role: "user",
+      content: transcript
+    });
+
+    // Appel OpenAI avec historique
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: conversations[session_id],
+        temperature: 0.8
+      })
+    });
+
+    const data = await response.json();
+
+    const assistantText = data.choices[0].message.content;
+
+    // Ajouter réponse IA
+    conversations[session_id].push({
+      role: "assistant",
+      content: assistantText
+    });
+
+    res.json({
+      assistant_text: assistantText,
+      corrected_user_text: null,
+      pronunciation_tip: null,
+      audio_base64: null
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
