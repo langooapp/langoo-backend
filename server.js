@@ -129,11 +129,12 @@ app.post("/conversation/start", async (req, res) => {
     conversations[sessionId] = [
       {
         role: "system",
-        content: `You are a friendly English conversation partner.
+        content: content: `You are a friendly English conversation partner.
 The user's native language is ${nativeLang}.
 Speak simply, naturally, and like a real person.
-Always answer in 1 short sentence, maximum 2.
-Use simple English for beginners.`
+Always answer in 1 very short sentence, maximum 2 short sentences.
+Use easy English words for beginners.
+Do not give long explanations unless the user explicitly asks for them.`
       }
     ];
 
