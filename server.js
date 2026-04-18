@@ -1,6 +1,9 @@
 const express = require("express");
+const multer = require("multer");
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
+
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -74,25 +77,55 @@ app.post("/chat", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
+
 // ===============================
 // REAL TALK - CONVERSATION MODE
 // ===============================
 
-const conversations = {}; // mémoire simple
+const conversations = {};
 
 function generateSessionId() {
   return Math.random().toString(36).substring(2, 10);
 }
 
-// START CONVERSATION
+async function makeSpeechBase64(inputText) {
+  if (!inputText || !inputText.trim()) return null;
+
+  const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini-tts",
+      voice: "marin",
+      input: inputText,
+      instructions:
+        "Speak like a friendly native English conversation partner. Be natural, warm, expressive, and clear. Slightly slow down when the user seems to struggle."
+    })
+  });
+
+  if (!ttsResponse.ok) {
+    const errText = await ttsResponse.text();
+    throw new Error(`TTS failed: ${errText}`);
+  }
+
+  const audioBuffer = await ttsResponse.arrayBuffer();
+  return Buffer.from(audioBuffer).toString("base64");
+}
+
 app.post("/conversation/start", async (req, res) => {
+  console.log("START route hit");
+
   try {
     const sessionId = generateSessionId();
 
     conversations[sessionId] = [
       {
         role: "system",
-        content: "You are a friendly English conversation partner. Be natural, expressive, short, and engaging. React like a real person."
+        content:
+          "You are a friendly English conversation partner for French speakers. Be natural, expressive, short, and engaging. React like a real person. If the user asks in French how to say something in English, help naturally. If the user asks you to speak more slowly, do it. Keep answers conversational, not robotic."
       }
     ];
 
@@ -103,39 +136,84 @@ app.post("/conversation/start", async (req, res) => {
       content: firstMessage
     });
 
+    let audioBase64 = null;
+
+    try {
+      audioBase64 = await makeSpeechBase64(firstMessage);
+    } catch (e) {
+      console.log("START TTS error:", e);
+    }
+
     res.json({
       session_id: sessionId,
       assistant_text: firstMessage,
-      audio_base64: null
+      audio_base64: audioBase64
     });
-
   } catch (err) {
+    console.error("START ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
+app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
+  console.log("TURN route hit");
+  console.log("BODY:", req.body);
+  console.log("FILE:", req.file ? req.file.originalname : "no file");
 
-// TURN CONVERSATION
-app.post("/conversation/turn", async (req, res) => {
   try {
-    const { session_id, transcript } = req.body;
+    const { session_id, transcript, response_mode, lang, level } = req.body;
 
-    if (!session_id || !transcript) {
-      return res.status(400).json({ error: "Missing data" });
+    if (!session_id) {
+      return res.status(400).json({ error: "Missing session_id" });
     }
 
     if (!conversations[session_id]) {
       return res.status(400).json({ error: "Invalid session" });
     }
 
-    // Ajouter message user
+    let finalTranscript = (transcript || "").trim();
+
+    if (req.file && req.file.buffer) {
+      try {
+        const form = new FormData();
+        const audioBlob = new Blob([req.file.buffer], {
+          type: req.file.mimetype || "audio/m4a"
+        });
+
+        form.append("file", audioBlob, req.file.originalname || "speech.m4a");
+        form.append("model", "gpt-4o-mini-transcribe");
+        form.append("language", "en");
+
+        const sttResponse = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+          },
+          body: form
+        });
+
+        const sttData = await sttResponse.json();
+
+        if (sttResponse.ok && sttData.text) {
+          finalTranscript = sttData.text.trim();
+        } else {
+          console.log("STT error:", sttData);
+        }
+      } catch (e) {
+        console.log("STT crash:", e);
+      }
+    }
+
+    if (!finalTranscript) {
+      return res.status(400).json({ error: "Missing transcript/audio" });
+    }
+
     conversations[session_id].push({
       role: "user",
-      content: transcript
+      content: finalTranscript
     });
 
-    // Appel OpenAI avec historique
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const chatResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -148,54 +226,43 @@ app.post("/conversation/turn", async (req, res) => {
       })
     });
 
-    const data = await response.json();
+    const chatData = await chatResponse.json();
 
-    const assistantText = data.choices[0].message.content;
+    if (!chatResponse.ok) {
+      return res.status(chatResponse.status).json({
+        error: "OpenAI chat error",
+        details: chatData
+      });
+    }
 
-    // Ajouter réponse IA
+    const assistantText =
+      chatData?.choices?.[0]?.message?.content || "Sorry, I didn't catch that.";
+
     conversations[session_id].push({
       role: "assistant",
       content: assistantText
     });
 
-    // ===============================
-// TTS (voix IA)
-// ===============================
+    let audioBase64 = null;
 
-let audioBase64 = null;
+    try {
+      audioBase64 = await makeSpeechBase64(assistantText);
+    } catch (e) {
+      console.log("TURN TTS error:", e);
+    }
 
-try {
-  const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini-tts",
-      voice: "alloy",
-      input: assistantText
-    })
-  });
-
-  const audioBuffer = await ttsResponse.arrayBuffer();
-  audioBase64 = Buffer.from(audioBuffer).toString("base64");
-
-} catch (e) {
-  console.log("TTS error:", e);
-}
-
-// Réponse finale
-res.json({
-  assistant_text: assistantText,
-  corrected_user_text: null,
-  pronunciation_tip: null,
-  audio_base64: audioBase64
-});
+    res.json({
+      assistant_text: assistantText,
+      corrected_user_text: finalTranscript,
+      pronunciation_tip: null,
+      audio_base64: audioBase64
+    });
   } catch (err) {
+    console.error("TURN ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
