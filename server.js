@@ -13,7 +13,7 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 10000;
 
 // ===============================
-// CHAT (autre exercice)
+// CHAT
 // ===============================
 
 app.post("/chat", async (req, res) => {
@@ -36,7 +36,7 @@ app.post("/chat", async (req, res) => {
           {
             role: "system",
             content:
-              "You generate simple English learning content. Return exactly 3 lines. Each line must follow this format: English sentence - Translation. No extra text."
+              "You generate simple English learning content. Return exactly 3 lines. Each line must follow this format: English sentence - Translation."
           },
           {
             role: "user",
@@ -48,13 +48,6 @@ app.post("/chat", async (req, res) => {
     });
 
     const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: "OpenAI error",
-        details: data
-      });
-    }
 
     const content = data?.choices?.[0]?.message?.content || "";
 
@@ -71,20 +64,15 @@ app.post("/chat", async (req, res) => {
       });
 
     res.json({ result: JSON.stringify(sentences) });
+
   } catch (error) {
-    res.status(500).json({ error: "Server error", details: String(error) });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
 // ===============================
-// REAL TALK - CURRENT PIPELINE
+// REALTIME TOKEN
 // ===============================
-
-const conversations = {};
-
-function generateSessionId() {
-  return Math.random().toString(36).substring(2, 10);
-}
 
 function getLanguageName(code) {
   switch ((code || "").toLowerCase()) {
@@ -99,186 +87,9 @@ function getLanguageName(code) {
   }
 }
 
-async function makeSpeechBase64(text) {
-  const response = await fetch("https://api.openai.com/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini-tts",
-      voice: "marin",
-      input: text
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`TTS failed: ${errorText}`);
-  }
-
-  const buffer = await response.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
-}
-
-app.post("/conversation/start", async (req, res) => {
-  try {
-    const sessionId = generateSessionId();
-    const { native_language } = req.body;
-    const nativeLang = getLanguageName(native_language);
-
-    conversations[sessionId] = [
-      {
-        role: "system",
-        content: `You are a friendly English conversation partner.
-The user's native language is ${nativeLang}.
-Speak simply, naturally, and like a real person.
-Always answer in 1 very short sentence, maximum 2 short sentences.
-Use easy English words for beginners.
-Do not give long explanations unless the user explicitly asks for them.`
-      }
-    ];
-
-    const firstMessage = "Hi! How are you today?";
-
-    conversations[sessionId].push({
-      role: "assistant",
-      content: firstMessage
-    });
-
-    const audio = await makeSpeechBase64(firstMessage);
-
-    res.json({
-      session_id: sessionId,
-      assistant_text: firstMessage,
-      audio_base64: audio
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
-  try {
-    const { session_id, transcript } = req.body;
-
-    if (!conversations[session_id]) {
-      return res.status(400).json({ error: "Invalid session" });
-    }
-
-    let finalText = transcript;
-
-    if (req.file) {
-      const form = new FormData();
-      const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
-
-      form.append("file", blob, "audio.m4a");
-      form.append("model", "gpt-4o-mini-transcribe");
-
-      const stt = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
-        },
-        body: form
-      });
-
-      const sttData = await stt.json();
-
-      if (sttData.text) {
-        finalText = sttData.text;
-      }
-    }
-
-    conversations[session_id].push({
-      role: "user",
-      content: finalText
-    });
-
-    const chat = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: conversations[session_id],
-        temperature: 0.4
-      })
-    });
-
-    const chatData = await chat.json();
-
-    if (!chat.ok) {
-      return res.status(chat.status).json({
-        error: "OpenAI chat error",
-        details: chatData
-      });
-    }
-
-    const reply = chatData?.choices?.[0]?.message?.content || "Sorry, I didn't catch that.";
-
-    conversations[session_id].push({
-      role: "assistant",
-      content: reply
-    });
-
-    const audio = await makeSpeechBase64(reply);
-
-    res.json({
-      assistant_text: reply,
-      corrected_user_text: finalText,
-      pronunciation_tip: null,
-      audio_base64: audio
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ===============================
-// REALTIME TOKEN ENDPOINT (OPTION A)
-// ===============================
-
 app.get("/realtime/token", async (req, res) => {
   try {
     const nativeLanguage = getLanguageName(req.query.native_language || "fr");
-
-    const body = {
-      expires_after: {
-        anchor: "created_at",
-        seconds: 7200
-      },
-      session: {
-        type: "realtime",
-        model: "gpt-realtime",
-        audio: {
-          output: {
-            voice: "marin"
-          },
-          input: {
-            noise_reduction: {
-              type: "near_field"
-            },
-            turn_detection: {
-              type: "server_vad",
-              silence_duration_ms: 450,
-              prefix_padding_ms: 250,
-              threshold: 0.5,
-              create_response: true
-            }
-          }
-        },
-        instructions: `You are a friendly English conversation partner for language learners.
-The user's native language is ${nativeLanguage}.
-Speak naturally, warmly, and clearly.
-Keep answers short and conversational.
-Use beginner-friendly English unless the user clearly speaks at a higher level.
-If the user asks how to say something in English, answer briefly and clearly.`
-      }
-    };
 
     const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
@@ -286,25 +97,128 @@ If the user asks how to say something in English, answer briefly and clearly.`
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        session: {
+          type: "realtime",
+          model: "gpt-realtime",
+          audio: {
+            output: { voice: "marin" },
+            input: {
+              turn_detection: {
+                type: "server_vad",
+                silence_duration_ms: 450,
+                threshold: 0.5,
+                create_response: true
+              }
+            }
+          },
+          instructions: `You are a friendly English conversation partner.
+The user's native language is ${nativeLanguage}.
+Speak naturally and keep answers short and conversational.`
+        }
+      })
     });
 
     const data = await response.json();
+    res.json(data);
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: "Realtime token error",
-        details: data
-      });
+  } catch (error) {
+    res.status(500).json({ error: "Realtime token error" });
+  }
+});
+
+// ===============================
+// REALTIME WEB PAGE (CRUCIAL FIX)
+// ===============================
+
+app.get("/realtime-client", (req, res) => {
+  const nativeLanguage = req.query.native_language || "fr";
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+
+  res.send(`<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { background:#16163A; color:white; font-family:sans-serif; padding:16px; }
+button { width:100%; padding:16px; margin-bottom:10px; font-size:18px; }
+</style>
+</head>
+<body>
+
+<h2>Real Talk Live</h2>
+
+<button onclick="connect()">Connect live voice</button>
+<button onclick="disconnect()">Disconnect</button>
+
+<p id="status">Idle</p>
+<p><b>You:</b> <span id="you"></span></p>
+<p><b>AI:</b> <span id="ai"></span></p>
+
+<script>
+let pc;
+
+async function connect() {
+  document.getElementById("status").textContent = "Connecting...";
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+  const tokenRes = await fetch('/realtime/token?native_language=${nativeLanguage}');
+  const tokenData = await tokenRes.json();
+  const key = tokenData.client_secret.value;
+
+  pc = new RTCPeerConnection();
+
+  stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+  const dc = pc.createDataChannel("oai-events");
+
+  dc.onmessage = e => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.type === "response.audio_transcript.delta") {
+      document.getElementById("ai").textContent += msg.delta;
     }
 
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({
-      error: "Failed to generate realtime token",
-      details: String(error)
-    });
+    if (msg.type === "conversation.item.input_audio_transcription.completed") {
+      document.getElementById("you").textContent = msg.transcript;
+    }
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  const sdpRes = await fetch("https://api.openai.com/v1/realtime?model=gpt-realtime", {
+    method: "POST",
+    body: offer.sdp,
+    headers: {
+      Authorization: "Bearer " + key,
+      "Content-Type": "application/sdp"
+    }
+  });
+
+  const answer = {
+    type: "answer",
+    sdp: await sdpRes.text()
+  };
+
+  await pc.setRemoteDescription(answer);
+
+  document.getElementById("status").textContent = "Connected";
+}
+
+function disconnect() {
+  if (pc) {
+    pc.close();
+    pc = null;
   }
+  document.getElementById("status").textContent = "Disconnected";
+}
+</script>
+
+</body>
+</html>`);
 });
 
 app.listen(PORT, () => {
