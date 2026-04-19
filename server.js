@@ -49,6 +49,13 @@ app.post("/chat", async (req, res) => {
 
     const data = await response.json();
 
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: "OpenAI error",
+        details: data
+      });
+    }
+
     const content = data?.choices?.[0]?.message?.content || "";
 
     const sentences = content
@@ -64,14 +71,13 @@ app.post("/chat", async (req, res) => {
       });
 
     res.json({ result: JSON.stringify(sentences) });
-
   } catch (error) {
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ error: "Server error", details: String(error) });
   }
 });
 
 // ===============================
-// REAL TALK
+// REAL TALK - CURRENT PIPELINE
 // ===============================
 
 const conversations = {};
@@ -93,10 +99,6 @@ function getLanguageName(code) {
   }
 }
 
-// ===============================
-// TTS
-// ===============================
-
 async function makeSpeechBase64(text) {
   const response = await fetch("https://api.openai.com/v1/audio/speech", {
     method: "POST",
@@ -111,25 +113,25 @@ async function makeSpeechBase64(text) {
     })
   });
 
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`TTS failed: ${errorText}`);
+  }
+
   const buffer = await response.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
 }
 
-// ===============================
-// START CONVERSATION
-// ===============================
-
 app.post("/conversation/start", async (req, res) => {
   try {
     const sessionId = generateSessionId();
-
     const { native_language } = req.body;
     const nativeLang = getLanguageName(native_language);
 
     conversations[sessionId] = [
       {
         role: "system",
-        content: content: `You are a friendly English conversation partner.
+        content: `You are a friendly English conversation partner.
 The user's native language is ${nativeLang}.
 Speak simply, naturally, and like a real person.
 Always answer in 1 very short sentence, maximum 2 short sentences.
@@ -152,15 +154,10 @@ Do not give long explanations unless the user explicitly asks for them.`
       assistant_text: firstMessage,
       audio_base64: audio
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
-
-// ===============================
-// TURN
-// ===============================
 
 app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
   try {
@@ -171,10 +168,6 @@ app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
     }
 
     let finalText = transcript;
-
-    // ===============================
-    // STT
-    // ===============================
 
     if (req.file) {
       const form = new FormData();
@@ -203,10 +196,6 @@ app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
       content: finalText
     });
 
-    // ===============================
-    // GPT
-    // ===============================
-
     const chat = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -216,22 +205,25 @@ app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: conversations[session_id],
-        temperature: 0.8
+        temperature: 0.4
       })
     });
 
     const chatData = await chat.json();
 
-    const reply = chatData.choices[0].message.content;
+    if (!chat.ok) {
+      return res.status(chat.status).json({
+        error: "OpenAI chat error",
+        details: chatData
+      });
+    }
+
+    const reply = chatData?.choices?.[0]?.message?.content || "Sorry, I didn't catch that.";
 
     conversations[session_id].push({
       role: "assistant",
       content: reply
     });
-
-    // ===============================
-    // TTS
-    // ===============================
 
     const audio = await makeSpeechBase64(reply);
 
@@ -241,9 +233,77 @@ app.post("/conversation/turn", upload.single("audio"), async (req, res) => {
       pronunciation_tip: null,
       audio_base64: audio
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// REALTIME TOKEN ENDPOINT (OPTION A)
+// ===============================
+
+app.get("/realtime/token", async (req, res) => {
+  try {
+    const nativeLanguage = getLanguageName(req.query.native_language || "fr");
+
+    const body = {
+      expires_after: {
+        anchor: "created_at",
+        seconds: 7200
+      },
+      session: {
+        type: "realtime",
+        model: "gpt-realtime",
+        audio: {
+          output: {
+            voice: "marin"
+          },
+          input: {
+            noise_reduction: {
+              type: "near_field"
+            },
+            turn_detection: {
+              type: "server_vad",
+              silence_duration_ms: 450,
+              prefix_padding_ms: 250,
+              threshold: 0.5,
+              create_response: true
+            }
+          }
+        },
+        instructions: `You are a friendly English conversation partner for language learners.
+The user's native language is ${nativeLanguage}.
+Speak naturally, warmly, and clearly.
+Keep answers short and conversational.
+Use beginner-friendly English unless the user clearly speaks at a higher level.
+If the user asks how to say something in English, answer briefly and clearly.`
+      }
+    };
+
+    const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: "Realtime token error",
+        details: data
+      });
+    }
+
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({
+      error: "Failed to generate realtime token",
+      details: String(error)
+    });
   }
 });
 
