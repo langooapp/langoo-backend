@@ -246,6 +246,202 @@ app.get("/voice-coach/token", async (req, res) => {
 });
  
 // ===============================
+// NATIVE MODE — "Can you fool a native?"
+// Phonetic challenge exercise (replaces Real Talk).
+// ===============================
+ 
+const NATIVE_THEME_LABELS = {
+  free:   "everyday life, random, spontaneous",
+  street: "street life, directions, casual encounters, small talk",
+  cafe:   "cafe, restaurant, ordering food or drinks, small talk with staff",
+  travel: "travel, airport, hotel, transport, booking, tourism",
+  work:   "office, job interview, meeting, professional phone call"
+};
+ 
+const NATIVE_DIFFICULTY_LABELS = {
+  easy:      "very simple everyday sentence, short, 5-8 words, zero slang",
+  medium:    "natural native phrasing, 8-14 words, light idiom OK",
+  hard:      "fast casual native phrasing with contractions, slang, reductions, 10-18 words",
+  nightmare: "very advanced native phrasing: heavy slang, idioms, linked sounds, reductions, 12-22 words, the kind of sentence that exposes non-natives instantly"
+};
+ 
+app.post("/native-mode/sentence", async (req, res) => {
+  try {
+    const {
+      native_language = "fr",
+      difficulty      = "medium",
+      theme           = "free",
+      recent          = []
+    } = req.body || {};
+ 
+    const nativeLang      = getLanguageName(native_language);
+    const themeLabel      = NATIVE_THEME_LABELS[theme]      || NATIVE_THEME_LABELS.free;
+    const difficultyLabel = NATIVE_DIFFICULTY_LABELS[difficulty] || NATIVE_DIFFICULTY_LABELS.medium;
+ 
+    const avoid = Array.isArray(recent) ? recent.slice(-30).join(" | ") : "";
+ 
+    const system =
+`You generate ONE short English sentence for a pronunciation challenge called "Native Mode".
+The goal: the user must repeat it out loud and try to sound native.
+ 
+Rules:
+- Output STRICT JSON only, no markdown, no commentary.
+- JSON shape:
+{
+  "id": "short unique slug, a-z0-9 and dashes, max 24 chars",
+  "text": "the English sentence",
+  "phonetic": "a phonetic hint written in ${nativeLang} orthography so a ${nativeLang} speaker can approximate the sound",
+  "translation": "translation of the sentence in ${nativeLang}",
+  "theme": "${theme}",
+  "difficulty": "${difficulty}"
+}
+- The sentence theme: ${themeLabel}.
+- Difficulty style: ${difficultyLabel}.
+- The sentence MUST feel natural, something a real native would actually say — never textbook English.
+- NEVER reuse any of these previously served sentences: ${avoid || "(none)"}
+- Be creative, surprising, fresh. Vary openings, grammar, registers.
+- No quotation marks inside "text".`;
+ 
+    const user = `Generate a fresh ${difficulty} ${theme} sentence now. Remember: strict JSON only.`;
+ 
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 1.05,
+        top_p: 0.95,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user",   content: user   }
+        ]
+      })
+    });
+ 
+    const data = await response.json();
+    const raw  = data?.choices?.[0]?.message?.content || "{}";
+ 
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
+ 
+    // Defensive defaults
+    const out = {
+      id:          parsed.id          || `nm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
+      text:        parsed.text        || "What are you up to this weekend?",
+      phonetic:    parsed.phonetic    || null,
+      translation: parsed.translation || null,
+      theme:       parsed.theme       || theme,
+      difficulty:  parsed.difficulty  || difficulty
+    };
+ 
+    res.json(out);
+  } catch (error) {
+    console.error("native-mode/sentence error:", error);
+    res.status(500).json({ error: "native-mode sentence error" });
+  }
+});
+ 
+app.post("/native-mode/score", async (req, res) => {
+  try {
+    const {
+      target          = "",
+      transcript      = "",
+      native_language = "fr"
+    } = req.body || {};
+ 
+    if (!target || typeof target !== "string") {
+      return res.status(400).json({ error: "Missing target" });
+    }
+ 
+    const nativeLang = getLanguageName(native_language);
+ 
+    const system =
+`You are a strict but fair English pronunciation judge for an app called Langoo.
+You compare what the user was supposed to say ("target") with what the speech-to-text engine heard ("transcript").
+The transcript is a proxy for how clearly the user pronounced the words.
+ 
+Rules:
+- Output STRICT JSON only. No markdown. No commentary.
+- JSON shape:
+{
+  "score": integer 0-100,
+  "grade": one of "tourist" | "learner" | "speaker" | "native",
+  "feedback_native": one short sentence (max 18 words) in ${nativeLang}, warm, actionable,
+  "feedback_english": one short sentence in English, same vibe
+}
+ 
+Scoring guide:
+- 90-100 native: transcript matches target almost perfectly, minor punctuation/case differences only.
+- 70-89 speaker: transcript is very close but missed 1-2 minor words.
+- 40-69 learner: several words wrong or missing.
+- 0-39 tourist: transcript barely matches the target.
+ 
+If the transcript is empty or gibberish, score <= 20.
+ 
+Feedback:
+- Never shame. Be encouraging but honest.
+- Mention a specific word to focus on next time if useful.
+- Keep it short, one sentence each.`;
+ 
+    const user =
+`TARGET: ${target}
+TRANSCRIPT: ${transcript || "(empty)"}
+ 
+Judge now. Return JSON only.`;
+ 
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.2,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user",   content: user   }
+        ]
+      })
+    });
+ 
+    const data = await response.json();
+    const raw  = data?.choices?.[0]?.message?.content || "{}";
+ 
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
+ 
+    let score = parseInt(parsed.score, 10);
+    if (isNaN(score)) score = 0;
+    score = Math.max(0, Math.min(100, score));
+ 
+    const grades = ["tourist", "learner", "speaker", "native"];
+    let grade = grades.includes(parsed.grade) ? parsed.grade : null;
+    if (!grade) {
+      if      (score >= 90) grade = "native";
+      else if (score >= 70) grade = "speaker";
+      else if (score >= 40) grade = "learner";
+      else                  grade = "tourist";
+    }
+ 
+    res.json({
+      score,
+      grade,
+      feedback_native:  parsed.feedback_native  || null,
+      feedback_english: parsed.feedback_english || null
+    });
+  } catch (error) {
+    console.error("native-mode/score error:", error);
+    res.status(500).json({ error: "native-mode score error" });
+  }
+});
+ 
+// ===============================
 // REALTIME WEB PAGE (existing, model aligned)
 // ===============================
 app.get("/realtime-client", (req, res) => {
