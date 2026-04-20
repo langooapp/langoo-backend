@@ -259,10 +259,10 @@ const NATIVE_THEME_LABELS = {
 };
  
 const NATIVE_DIFFICULTY_LABELS = {
-  easy:      "very simple everyday sentence, short, 5-8 words, zero slang",
-  medium:    "natural native phrasing, 8-14 words, light idiom OK",
-  hard:      "fast casual native phrasing with contractions, slang, reductions, 10-18 words",
-  nightmare: "very advanced native phrasing: heavy slang, idioms, linked sounds, reductions, 12-22 words, the kind of sentence that exposes non-natives instantly"
+  easy:      "short simple everyday sentence, 5-8 words, one or two sounds that learners often miss (like 'th', 'r' vs 'l', long vs short vowels)",
+  medium:    "natural native phrasing, 8-14 words, contractions allowed, include at least one tricky phonetic feature (linking, vowel reduction, 'th', diphthong)",
+  hard:      "fast casual native phrasing, 10-18 words, pack in connected speech: reductions ('gonna', 'wanna', 'kinda'), linking, weak forms, tricky consonant clusters",
+  nightmare: "phonetic nightmare sentence, 12-22 words, designed to expose non-natives: heavy reductions, linking sounds across words, th+r clusters, /æ/ vs /ʌ/, stress-timing traps, idiomatic chunk that native speakers say without thinking"
 };
  
 app.post("/native-mode/sentence", async (req, res) => {
@@ -350,6 +350,7 @@ app.post("/native-mode/score", async (req, res) => {
     const {
       target          = "",
       transcript      = "",
+      confidence      = 0,        // 0..1 — Apple Speech recognizer confidence
       native_language = "fr"
     } = req.body || {};
  
@@ -359,39 +360,68 @@ app.post("/native-mode/score", async (req, res) => {
  
     const nativeLang = getLanguageName(native_language);
  
-    const system =
-`You are a strict but fair English pronunciation judge for an app called Langoo.
-You compare what the user was supposed to say ("target") with what the speech-to-text engine heard ("transcript").
-The transcript is a proxy for how clearly the user pronounced the words.
+    // Strip ALL punctuation for comparison — punctuation is not spoken.
+    const stripPunct = (s) => (s || "")
+      .toLowerCase()
+      .replace(/[\p{P}\p{S}]+/gu, " ")   // punctuation + symbols
+      .replace(/\s+/g, " ")
+      .trim();
  
-Rules:
-- Output STRICT JSON only. No markdown. No commentary.
-- JSON shape:
+    const cleanTarget     = stripPunct(target);
+    const cleanTranscript = stripPunct(transcript);
+ 
+    // Clamp confidence to 0..1 and render as percentage for the prompt
+    const confClamped = Math.max(0, Math.min(1, Number(confidence) || 0));
+    const confPct     = Math.round(confClamped * 100);
+ 
+    const system =
+`You are a STRICT phonetic pronunciation judge for an English-learning app called Langoo.
+ 
+Your job: score how NATIVE the user sounded when they tried to repeat a target sentence.
+The PRIMARY goal of the exercise is PHONETIC ACCURACY. Word accuracy matters less than sounding native.
+ 
+You will receive:
+- TARGET: the sentence the user was asked to say (with punctuation).
+- TRANSCRIPT: what Apple's on-device speech recognizer heard (best guess in words).
+- RECOGNIZER CONFIDENCE: a 0-100 number reflecting how clearly the recognizer understood the user. Low confidence strongly suggests unclear pronunciation.
+ 
+STRICT RULES:
+1. Punctuation is NEVER spoken. IGNORE ALL commas, periods, question marks, exclamation marks, apostrophes, hyphens, quotes, etc. Compare the spoken words ONLY. A missing pause for a comma NEVER counts as an error.
+2. Casing, accents, and extra spaces are irrelevant.
+3. Contractions and their expansions are equivalent ("I am" == "I'm", "do not" == "don't").
+4. Common homophones/near-homophones that result from speech-to-text are NOT a user error ("for" vs "four", "their" vs "there"). Give full credit.
+5. The RECOGNIZER CONFIDENCE is your main phonetic signal:
+   - confidence >= 85 AND transcript matches target → native territory (90-100).
+   - confidence 70-84 AND transcript matches → speaker (75-89).
+   - confidence 45-69 with decent match → learner (50-74).
+   - confidence < 45 OR transcript barely matches → tourist (0-39).
+6. If the transcript words match perfectly but confidence is high, award 95-100. Do NOT deduct for missing punctuation.
+7. If transcript is empty or gibberish, score <= 15.
+ 
+OUTPUT FORMAT — STRICT JSON ONLY, no markdown:
 {
   "score": integer 0-100,
   "grade": one of "tourist" | "learner" | "speaker" | "native",
-  "feedback_native": one short sentence (max 18 words) in ${nativeLang}, warm, actionable,
-  "feedback_english": one short sentence in English, same vibe
+  "feedback_native": one short sentence (max 18 words) in ${nativeLang}, warm, specific, actionable. Focus on PHONETIC advice (which sound to soften, which vowel to relax, linking, stress).
+  "feedback_english": one short sentence in English, same vibe, same length.
 }
  
-Scoring guide:
-- 90-100 native: transcript matches target almost perfectly, minor punctuation/case differences only.
-- 70-89 speaker: transcript is very close but missed 1-2 minor words.
-- 40-69 learner: several words wrong or missing.
-- 0-39 tourist: transcript barely matches the target.
- 
-If the transcript is empty or gibberish, score <= 20.
- 
-Feedback:
-- Never shame. Be encouraging but honest.
-- Mention a specific word to focus on next time if useful.
-- Keep it short, one sentence each.`;
+Feedback rules:
+- Never shame. Encouraging but honest.
+- If accuracy is high but confidence is low → praise the words, point at pronunciation clarity.
+- If a specific word likely tripped them → name it.
+- Never mention punctuation in the feedback.`;
  
     const user =
 `TARGET: ${target}
-TRANSCRIPT: ${transcript || "(empty)"}
+TARGET (compare form): ${cleanTarget}
  
-Judge now. Return JSON only.`;
+TRANSCRIPT: ${transcript || "(empty)"}
+TRANSCRIPT (compare form): ${cleanTranscript || "(empty)"}
+ 
+RECOGNIZER CONFIDENCE: ${confPct}/100
+ 
+Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
  
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
