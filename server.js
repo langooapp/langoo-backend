@@ -258,14 +258,62 @@ const NATIVE_THEME_LABELS = {
   work:   "office, job interview, meeting, professional phone call"
 };
  
-const NATIVE_DIFFICULTY_LABELS = {
-  // Keep the four tiers VERY visibly distinct. The user should feel the jump
-  // in difficulty as soon as they switch buttons.
-  easy:      "VERY short, basic everyday sentence, STRICTLY 3 to 5 words total, beginner vocabulary only, zero contractions, zero slang, zero reductions. Example energy: 'I love my dog.' or 'She is very tired.' — simple subject+verb+object, nothing more.",
-  medium:    "natural native phrasing, STRICTLY 6 to 10 words, contractions allowed (I'm, don't, you're), one clearly tricky phonetic feature (linking, 'th', long vowel, /r/ vs /l/). Feels like casual everyday spoken English, not textbook.",
-  hard:      "fast casual native speech, STRICTLY 11 to 16 words, pack in connected speech: reductions ('gonna', 'wanna', 'kinda', 'lemme'), linking across words, weak forms, tricky consonant clusters. Must sound like a real person talking at full speed.",
-  nightmare: "phonetic nightmare sentence, STRICTLY 15 to 22 words, designed to EXPOSE non-natives: heavy reductions, tons of linking, th+r clusters, /æ/ vs /ʌ/, stress-timing traps, idiomatic chunks that natives blurt without thinking. Should feel intimidating even to advanced learners."
+// Strict word-count ranges per difficulty. The server counts words in the
+// generated sentence and regenerates if it falls outside the range.
+const NATIVE_WORD_RANGES = {
+  easy:      { min: 3,  max: 5  },
+  medium:    { min: 6,  max: 10 },
+  hard:      { min: 11, max: 16 },
+  nightmare: { min: 15, max: 22 }
 };
+ 
+const NATIVE_DIFFICULTY_LABELS = {
+  easy:
+`VERY SHORT BEGINNER sentence. HARD LIMIT: 3 to 5 words total, never more.
+Beginner vocabulary only. NO contractions. NO slang. NO reductions.
+It must be something a complete beginner can read and repeat.
+Examples (shape + length):
+- "I love my dog."
+- "She is very tired."
+- "We go to school."
+- "The sky is blue."`,
+  medium:
+`Casual native phrasing. HARD LIMIT: 6 to 10 words total, never more.
+Contractions allowed (I'm, don't, you're). Include one clearly tricky phonetic feature
+(linking, 'th', long vowel, /r/ vs /l/). Feels like everyday spoken English.
+Examples (shape + length):
+- "I'm running late, grab me a coffee please."
+- "She really didn't mean to hurt your feelings."
+- "There's something weird about the way he talks."`,
+  hard:
+`Fast casual native speech. HARD LIMIT: 11 to 16 words total, never more.
+Pack in connected speech: reductions ('gonna', 'wanna', 'kinda', 'lemme'),
+linking across words, weak forms, tricky consonant clusters.
+Must sound like a real person talking at full speed.
+Examples (shape + length):
+- "I was gonna grab a bite but I kinda lost track of the time."
+- "You wouldn't believe the stuff he said after we got to the party."`,
+  nightmare:
+`Phonetic nightmare. HARD LIMIT: 15 to 22 words total, never more.
+Designed to EXPOSE non-natives: heavy reductions, tons of linking, th+r clusters,
+/æ/ vs /ʌ/, stress-timing traps, idiomatic chunks natives blurt without thinking.
+Should feel intimidating even to advanced learners.
+Examples (shape + length):
+- "Honestly she shoulda told him straight up that the whole thing was pretty much a waste of his time anyway."
+- "You're telling me he literally walked out of the meeting without saying a single word to anyone the entire afternoon?"`
+};
+ 
+// Count REAL spoken words in a sentence. Contractions like "I'm", "don't"
+// count as ONE word (matches how a user would say them). Punctuation is ignored.
+function nativeWordCount(text) {
+  if (!text || typeof text !== "string") return 0;
+  const cleaned = text
+    .replace(/[\u2018\u2019]/g, "'")   // smart quotes → straight
+    .replace(/[^A-Za-z'\- ]+/g, " ")   // strip everything except letters, ' and -
+    .trim();
+  if (!cleaned) return 0;
+  return cleaned.split(/\s+/).filter(Boolean).length;
+}
  
 app.post("/native-mode/sentence", async (req, res) => {
   try {
@@ -279,10 +327,11 @@ app.post("/native-mode/sentence", async (req, res) => {
     const nativeLang      = getLanguageName(native_language);
     const themeLabel      = NATIVE_THEME_LABELS[theme]      || NATIVE_THEME_LABELS.free;
     const difficultyLabel = NATIVE_DIFFICULTY_LABELS[difficulty] || NATIVE_DIFFICULTY_LABELS.medium;
+    const range           = NATIVE_WORD_RANGES[difficulty]   || NATIVE_WORD_RANGES.medium;
  
     const avoid = Array.isArray(recent) ? recent.slice(-30).join(" | ") : "";
  
-    const system =
+    const buildSystem = (retryHint = "") => (
 `You generate ONE short English sentence for a pronunciation challenge called "Native Mode".
 The goal: the user must repeat it out loud and try to sound native.
  
@@ -298,40 +347,64 @@ Rules:
   "difficulty": "${difficulty}"
 }
 - The sentence theme: ${themeLabel}.
-- Difficulty style: ${difficultyLabel}.
-- CRITICAL: strictly respect the word count range given by the difficulty style. Count words before answering. If it is out of range, rewrite it.
-- The sentence MUST feel natural, something a real native would actually say — never textbook English. Exception: at "easy" difficulty, clean beginner English is fine.
+- Difficulty style: ${difficultyLabel}
+- ABSOLUTE RULE: the "text" field MUST contain between ${range.min} and ${range.max} spoken words (contractions like "I'm" = 1 word). Count before answering. If out of range, REWRITE a shorter or longer one.
+- The sentence MUST feel natural. At "easy", clean beginner English is fine.
 - NEVER reuse any of these previously served sentences: ${avoid || "(none)"}
 - Be creative, surprising, fresh. Vary openings, grammar, registers.
-- No quotation marks inside "text".`;
+- No quotation marks inside "text".${retryHint}`
+    );
  
-    const user = `Generate a fresh ${difficulty} ${theme} sentence now. Remember: strict JSON only.`;
+    const userMsg = `Generate a fresh ${difficulty} ${theme} sentence now. Remember: strict JSON only, between ${range.min} and ${range.max} words.`;
  
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        temperature: 1.05,
-        top_p: 0.95,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user",   content: user   }
-        ]
-      })
-    });
+    async function tryGenerate(retryHint = "") {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          temperature: 1.05,
+          top_p: 0.95,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: buildSystem(retryHint) },
+            { role: "user",   content: userMsg }
+          ]
+        })
+      });
+      const data = await response.json();
+      const raw  = data?.choices?.[0]?.message?.content || "{}";
+      try { return JSON.parse(raw); } catch (_) { return {}; }
+    }
  
-    const data = await response.json();
-    const raw  = data?.choices?.[0]?.message?.content || "{}";
+    // Generate, then validate word count. Up to 2 retries with a stronger hint.
+    let parsed = await tryGenerate();
+    let wc = nativeWordCount(parsed?.text);
+    let attempts = 1;
+    while ((wc < range.min || wc > range.max) && attempts < 3) {
+      const hint =
+        `\n- RETRY: previous attempt had ${wc} words which is OUT OF the required ${range.min}-${range.max} range. Produce a new sentence that is STRICTLY within the range this time.`;
+      parsed = await tryGenerate(hint);
+      wc = nativeWordCount(parsed?.text);
+      attempts++;
+    }
  
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
+    // If STILL out of range after retries, trim/fallback on the easy tier so
+    // we never ship a 15-word "easy" sentence.
+    if (wc < range.min || wc > range.max) {
+      if (difficulty === "easy") {
+        parsed = {
+          ...parsed,
+          text: "I love my dog.",
+          phonetic: parsed?.phonetic || null,
+          translation: parsed?.translation || "J'aime mon chien."
+        };
+      }
+    }
  
-    // Defensive defaults
     const out = {
       id:          parsed.id          || `nm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       text:        parsed.text        || "What are you up to this weekend?",
@@ -340,6 +413,8 @@ Rules:
       theme:       parsed.theme       || theme,
       difficulty:  parsed.difficulty  || difficulty
     };
+ 
+    console.log(`[native-mode] difficulty=${difficulty} words=${nativeWordCount(out.text)} range=${range.min}-${range.max} attempts=${attempts}`);
  
     res.json(out);
   } catch (error) {
