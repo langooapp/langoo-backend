@@ -259,10 +259,12 @@ const NATIVE_THEME_LABELS = {
 };
  
 const NATIVE_DIFFICULTY_LABELS = {
-  easy:      "short simple everyday sentence, 5-8 words, one or two sounds that learners often miss (like 'th', 'r' vs 'l', long vs short vowels)",
-  medium:    "natural native phrasing, 8-14 words, contractions allowed, include at least one tricky phonetic feature (linking, vowel reduction, 'th', diphthong)",
-  hard:      "fast casual native phrasing, 10-18 words, pack in connected speech: reductions ('gonna', 'wanna', 'kinda'), linking, weak forms, tricky consonant clusters",
-  nightmare: "phonetic nightmare sentence, 12-22 words, designed to expose non-natives: heavy reductions, linking sounds across words, th+r clusters, /æ/ vs /ʌ/, stress-timing traps, idiomatic chunk that native speakers say without thinking"
+  // Keep the four tiers VERY visibly distinct. The user should feel the jump
+  // in difficulty as soon as they switch buttons.
+  easy:      "VERY short, basic everyday sentence, STRICTLY 3 to 5 words total, beginner vocabulary only, zero contractions, zero slang, zero reductions. Example energy: 'I love my dog.' or 'She is very tired.' — simple subject+verb+object, nothing more.",
+  medium:    "natural native phrasing, STRICTLY 6 to 10 words, contractions allowed (I'm, don't, you're), one clearly tricky phonetic feature (linking, 'th', long vowel, /r/ vs /l/). Feels like casual everyday spoken English, not textbook.",
+  hard:      "fast casual native speech, STRICTLY 11 to 16 words, pack in connected speech: reductions ('gonna', 'wanna', 'kinda', 'lemme'), linking across words, weak forms, tricky consonant clusters. Must sound like a real person talking at full speed.",
+  nightmare: "phonetic nightmare sentence, STRICTLY 15 to 22 words, designed to EXPOSE non-natives: heavy reductions, tons of linking, th+r clusters, /æ/ vs /ʌ/, stress-timing traps, idiomatic chunks that natives blurt without thinking. Should feel intimidating even to advanced learners."
 };
  
 app.post("/native-mode/sentence", async (req, res) => {
@@ -297,7 +299,8 @@ Rules:
 }
 - The sentence theme: ${themeLabel}.
 - Difficulty style: ${difficultyLabel}.
-- The sentence MUST feel natural, something a real native would actually say — never textbook English.
+- CRITICAL: strictly respect the word count range given by the difficulty style. Count words before answering. If it is out of range, rewrite it.
+- The sentence MUST feel natural, something a real native would actually say — never textbook English. Exception: at "easy" difficulty, clean beginner English is fine.
 - NEVER reuse any of these previously served sentences: ${avoid || "(none)"}
 - Be creative, surprising, fresh. Vary openings, grammar, registers.
 - No quotation marks inside "text".`;
