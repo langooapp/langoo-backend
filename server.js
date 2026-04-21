@@ -146,97 +146,61 @@ JSON SHAPE (required keys, no extras):
 });
  
 // ===============================
-// FILL-IN-THE-BLANKS — AI answer validator
-// When the user's pick differs from the canonical answer but still
-// completes the sentence grammatically AND semantically, we accept it.
-// Fixes cases like "The train is ____" / [red, blue, green, yellow]
-// where every color is a valid answer.
+// PRONUNCIATION TTS — ultra-natural OpenAI voice
+// Client (Pronunciation exercise) POSTs { text, voice? } and gets MP3 audio.
+// Uses the newest gpt-4o-mini-tts model with the calm, modern "nova" voice.
+// The client caches the result in NSCache so repeat listens are instant.
 // ===============================
-app.post("/fill-blanks/validate", async (req, res) => {
+app.post("/pronunciation/tts", async (req, res) => {
   try {
-    const { sentence = "", canonical = [], userPicks = [] } = req.body || {};
-    if (!sentence || !Array.isArray(userPicks) || userPicks.length === 0) {
-      return res.status(400).json({ error: "Missing fields" });
+    const { text = "", voice = "nova" } = req.body || {};
+    if (!text || typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({ error: "Missing text" });
     }
+    // Allowed voices on gpt-4o-mini-tts. "nova" = calm, modern, stable female.
+    // Other good options: "shimmer" (warm), "sage" (neutral), "verse" (lyrical),
+    // "alloy" (balanced), "coral", "ash", "ballad".
+    const allowed = new Set([
+      "nova", "shimmer", "alloy", "sage", "verse", "coral", "ash", "ballad", "echo", "fable", "onyx"
+    ]);
+    const voiceSafe = allowed.has(voice) ? voice : "nova";
  
-    // Build the two completed sentences (canonical vs user) for the AI judge.
-    const fillTemplate = (template, picks) => {
-      let i = 0;
-      return template.replace(/____/g, () => picks[i++] ?? "____");
-    };
+    const instructions =
+`Speak in a calm, modern, natural voice.
+Steady pace — not rushed, not overly slow.
+Keep intonation human and conversational, never robotic or sing-songy.
+Clear articulation so every word is crisp, but relaxed.
+Neutral American English. No emotion exaggeration. No theatrical delivery.`;
  
-    const canonicalFilled = fillTemplate(sentence, Array.isArray(canonical) ? canonical : []);
-    const userFilled      = fillTemplate(sentence, userPicks);
- 
-    const system =
-`You are a strict but fair English grammar + semantics judge for a fill-in-the-blank exercise.
- 
-You receive:
-- TEMPLATE: a sentence with "____" placeholders.
-- CANONICAL: the completed sentence using the author's intended answers.
-- USER:      the completed sentence using the learner's chosen words.
- 
-Your task: decide if USER is an ACCEPTABLE completion of TEMPLATE, independent of CANONICAL.
- 
-RULES:
-- Accept (valid=true) if USER is:
-    (a) grammatically correct English, AND
-    (b) semantically natural — a native speaker would accept it in normal conversation, AND
-    (c) preserves the sentence's structural intent (subject/verb/object agreement, tense, part-of-speech of each blank matches what the template requires).
-- Reject (valid=false) if USER has:
-    - grammar errors
-    - semantically weird / non-sensical combinations (e.g. "I drive the book", "The soup is tired")
-    - wrong part of speech in a blank
-    - awkward or broken English that a native would flag
-- CRITICAL: many blanks have multiple correct answers (colors, adjectives, common verbs). Be generous when USER is a genuine natural alternative. Example:
-    TEMPLATE: "The train is ____."
-    CANONICAL: "The train is red."
-    USER: "The train is blue." → valid=true.
-- Be strict about part-of-speech: a blank that wants a verb must not be filled with a noun, etc.
-- Idioms and collocations: if USER breaks a natural English collocation ("heavy rain" yes, "heavy sun" no), reject.
- 
-Output STRICT JSON ONLY — no markdown:
-{
-  "valid": true | false,
-  "reason": "one short sentence explaining"
-}`;
- 
-    const user =
-`TEMPLATE:  ${sentence}
-CANONICAL: ${canonicalFilled}
-USER:      ${userFilled}
- 
-Judge now. JSON only.`;
- 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const ttsRes = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user",   content: user }
-        ]
+        model: "gpt-4o-mini-tts",
+        voice: voiceSafe,
+        input: text,
+        instructions,
+        format: "mp3"
       })
     });
  
-    const data = await response.json();
-    const raw  = data?.choices?.[0]?.message?.content || "{}";
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
+    if (!ttsRes.ok) {
+      const errText = await ttsRes.text().catch(() => "");
+      console.error("pronunciation/tts upstream error:", ttsRes.status, errText);
+      return res.status(502).json({ error: "tts upstream error" });
+    }
  
-    const valid = parsed.valid === true;
-    res.json({ valid, reason: typeof parsed.reason === "string" ? parsed.reason : "" });
+    const arrayBuf = await ttsRes.arrayBuffer();
+    const buf = Buffer.from(arrayBuf);
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "public, max-age=604800"); // 7 days
+    res.send(buf);
   } catch (error) {
-    console.error("fill-blanks/validate error:", error);
-    // Conservative fallback: reject so the user gets a normal incorrect
-    // banner instead of a silent pass when the backend is flaky.
-    res.json({ valid: false, reason: "backend unavailable" });
+    console.error("pronunciation/tts error:", error);
+    res.status(500).json({ error: "pronunciation tts error" });
   }
 });
  
