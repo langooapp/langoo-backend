@@ -767,6 +767,420 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
 });
  
 // ===============================
+// ECHO 🪞 — flagship new exercise
+// "Speak. Hear yourself, but native."
+// Flow: user speaks freely → Whisper transcribes → GPT rewrites into
+// polished native English preserving their personality → TTS speaks
+// the rewrite → client shows BEFORE/AFTER + fluency scores + share card.
+// ===============================
+ 
+// --- Prompt pool: ~80 viral, emotional, fun prompts. Picked server-side
+//     so the client is simple and prompts can be refreshed without a ship.
+const ECHO_PROMPTS = [
+  // Memories
+  { emoji: "🎢", title: "The craziest night you ever had.",                  hint: "Set the scene, then go wild.", tag: "memory" },
+  { emoji: "😳", title: "A moment you were genuinely embarrassed.",           hint: "No filter. Spill it.", tag: "memory" },
+  { emoji: "🧠", title: "The dumbest thing you ever believed as a kid.",      hint: "Why did you believe it?", tag: "memory" },
+  { emoji: "🕰️", title: "A time you got caught doing something you shouldn't.", hint: "How did you talk your way out?", tag: "memory" },
+  { emoji: "🛫", title: "A trip that completely changed you.",                hint: "Where, why, what shifted?", tag: "memory" },
+  { emoji: "🎁", title: "The best gift you ever received.",                   hint: "Who, what, and why it mattered.", tag: "memory" },
+  { emoji: "🚪", title: "A person you wish you'd said goodbye to properly.",  hint: "Who, and what you'd say now.", tag: "memory" },
+  { emoji: "🌧️", title: "A day you secretly cried.",                         hint: "What broke, and did you recover?", tag: "memory" },
+ 
+  // Hot takes
+  { emoji: "🔥", title: "A hot take nobody agrees with you on.",              hint: "Defend it like a lawyer.", tag: "opinion" },
+  { emoji: "🎬", title: "A movie everyone loves but you hated.",              hint: "Tell us why, in detail.", tag: "opinion" },
+  { emoji: "🎵", title: "An overrated song of the decade.",                    hint: "Roast it musically.", tag: "opinion" },
+  { emoji: "📱", title: "The app you'd delete from the internet forever.",    hint: "And what you'd replace it with.", tag: "opinion" },
+  { emoji: "🍕", title: "A food people love that's actually disgusting.",     hint: "Be specific about the texture.", tag: "opinion" },
+  { emoji: "🏙️", title: "A city that's overrated — and why.",                hint: "Pick carefully.", tag: "opinion" },
+  { emoji: "🎨", title: "Art you just don't get.",                            hint: "Which piece / style / why.", tag: "opinion" },
+ 
+  // Roasts / honest talk
+  { emoji: "💔", title: "Roast your ex without using their name.",             hint: "Keep it sharp, not cruel.", tag: "roast" },
+  { emoji: "🫠", title: "The worst date you ever went on.",                    hint: "Walk us through the disaster.", tag: "roast" },
+  { emoji: "😒", title: "The most annoying coworker you've ever had.",         hint: "One story. Make it vivid.", tag: "roast" },
+  { emoji: "📸", title: "A trend you refuse to do no matter what.",           hint: "Why is it cringe to you?", tag: "roast" },
+  { emoji: "🤡", title: "A time you made a fool of yourself in public.",       hint: "Sell the second-hand embarrassment.", tag: "roast" },
+ 
+  // Dreams / fantasies
+  { emoji: "💰", title: "You just won 10 million euros. What happens in week one?", hint: "Be realistic. Hour by hour.", tag: "fantasy" },
+  { emoji: "🏝️", title: "You can move anywhere in the world tomorrow.",       hint: "Where, and your first day there.", tag: "fantasy" },
+  { emoji: "⏳", title: "You can visit one year of your life again.",         hint: "Which one, and what you'd fix.", tag: "fantasy" },
+  { emoji: "🦸", title: "You have one superpower for 24 hours.",              hint: "Pick it. Then use it wisely.", tag: "fantasy" },
+  { emoji: "📺", title: "You host your own TV show for one night.",           hint: "Name, vibe, first guest.", tag: "fantasy" },
+  { emoji: "🎤", title: "You give a 30-second speech at the Oscars.",         hint: "Who do you thank, and why?", tag: "fantasy" },
+  { emoji: "🧬", title: "You can have dinner with one dead icon.",            hint: "Who, where, what you'd ask.", tag: "fantasy" },
+ 
+  // Confessions
+  { emoji: "🤫", title: "A small secret you've never told anyone.",            hint: "Low stakes only — stay safe.", tag: "confession" },
+  { emoji: "😬", title: "A lie that's still following you around.",            hint: "Why did you tell it?", tag: "confession" },
+  { emoji: "🙃", title: "Something you pretend to like but actually don't.",   hint: "Be merciless.", tag: "confession" },
+  { emoji: "🧾", title: "The dumbest thing you ever spent money on.",         hint: "Defend the purchase if you can.", tag: "confession" },
+ 
+  // Identity
+  { emoji: "🧭", title: "What's one belief of yours that changed this year?",  hint: "Before vs. now.", tag: "identity" },
+  { emoji: "🌱", title: "Something you're finally getting better at.",         hint: "What does progress feel like?", tag: "identity" },
+  { emoji: "💼", title: "Describe your dream job — in real terms.",            hint: "A normal Tuesday at that job.", tag: "identity" },
+  { emoji: "🫧", title: "Your comfort routine for a rough day.",               hint: "Walk us through it, minute by minute.", tag: "identity" },
+  { emoji: "📚", title: "A book / film / song that rewired your brain.",      hint: "What changed afterward?", tag: "identity" },
+  { emoji: "🪞", title: "Describe yourself the way your best friend would.",   hint: "Steal their voice for 30 seconds.", tag: "identity" },
+ 
+  // Relationships
+  { emoji: "👶", title: "The best parent / teacher / mentor you had.",         hint: "One moment that defined them.", tag: "relationships" },
+  { emoji: "🤝", title: "The weirdest friendship you've ever had.",           hint: "How did you meet?", tag: "relationships" },
+  { emoji: "💌", title: "A message you wish you could send right now.",        hint: "To who — and why you won't.", tag: "relationships" },
+  { emoji: "🫂", title: "A friendship that faded for no real reason.",        hint: "What was the last interaction?", tag: "relationships" },
+ 
+  // Food / culture
+  { emoji: "🍳", title: "Your signature dish — explain it like a chef.",       hint: "Ingredients, technique, story.", tag: "food" },
+  { emoji: "🍷", title: "The best meal of your entire life.",                  hint: "Where, who with, what was on the plate.", tag: "food" },
+  { emoji: "☕", title: "Describe your perfect coffee order.",                  hint: "Size, temp, milk, attitude.", tag: "food" },
+  { emoji: "🍜", title: "A dish from your country a foreigner has to try.",    hint: "Sell it to a stranger.", tag: "food" },
+ 
+  // Weird / fun
+  { emoji: "👻", title: "A paranormal / creepy thing you've experienced.",     hint: "Keep it first-person. Details matter.", tag: "weird" },
+  { emoji: "🚨", title: "You have 60 seconds to prevent a disaster.",          hint: "Which one? What do you do first?", tag: "weird" },
+  { emoji: "🎭", title: "Play a character you hate for 30 seconds.",          hint: "Their voice, their words.", tag: "weird" },
+  { emoji: "🗺️", title: "Invent a country. Describe its capital.",             hint: "Currency, food, vibe.", tag: "weird" },
+  { emoji: "🎪", title: "Sell the most useless object in your home.",         hint: "Infomercial energy. Go.", tag: "weird" },
+ 
+  // Daily life (easy warmups)
+  { emoji: "☀️", title: "Your ideal Sunday, hour by hour.",                    hint: "From wake-up to bed.", tag: "daily" },
+  { emoji: "🏠", title: "Describe your room like an estate agent.",            hint: "Sell it to me.", tag: "daily" },
+  { emoji: "🛒", title: "What's in your grocery cart this week?",              hint: "Be specific and honest.", tag: "daily" },
+  { emoji: "📦", title: "The last thing you impulsively bought online.",       hint: "Regret or keep?", tag: "daily" },
+  { emoji: "🎮", title: "Your comfort movie, show, or game.",                  hint: "Why does it work for you?", tag: "daily" },
+  { emoji: "🚴", title: "A small ritual that makes your week better.",         hint: "Walk us through it.", tag: "daily" },
+ 
+  // Deep
+  { emoji: "🕊️", title: "What does success actually mean to you?",            hint: "Personal. Not a TED talk.", tag: "deep" },
+  { emoji: "🌌", title: "A question you want the universe to answer.",         hint: "Explain why that one.", tag: "deep" },
+  { emoji: "🪜", title: "The one piece of advice you'd give your 15-year-old self.", hint: "Say it out loud.", tag: "deep" },
+  { emoji: "🎯", title: "What are you chasing right now, and why?",            hint: "Be honest with yourself.", tag: "deep" },
+  { emoji: "🔒", title: "A fear you're ready to let go of.",                   hint: "Name it. Then reframe it.", tag: "deep" },
+ 
+  // Work / ambition
+  { emoji: "📈", title: "The smartest business idea you've never launched.",   hint: "One minute pitch.", tag: "work" },
+  { emoji: "🛠️", title: "A skill you want to master in 12 months.",           hint: "What would change if you did?", tag: "work" },
+  { emoji: "🎓", title: "The best lesson school never taught you.",            hint: "Where did you pick it up?", tag: "work" },
+ 
+  // Spicy / TikTok
+  { emoji: "💅", title: "Your most underrated personality trait.",             hint: "Flex it.", tag: "viral" },
+  { emoji: "📹", title: "You go viral tomorrow. Why?",                         hint: "Be specific. 60 seconds max.", tag: "viral" },
+  { emoji: "🧃", title: "Your most unhinged comfort combo (food + activity).", hint: "Defend it proudly.", tag: "viral" },
+  { emoji: "🔮", title: "Where will you be in exactly 5 years?",               hint: "One scene. Describe it.", tag: "viral" }
+];
+ 
+app.post("/echo/prompt", (req, res) => {
+  try {
+    const { recent = [] } = req.body || {};
+    const avoid = new Set(Array.isArray(recent) ? recent.slice(-30) : []);
+    const pool = ECHO_PROMPTS.filter(p => !avoid.has(p.title));
+    const list = pool.length > 0 ? pool : ECHO_PROMPTS;
+    const pick = list[Math.floor(Math.random() * list.length)];
+    res.json({
+      id: `echo-${Math.random().toString(36).slice(2, 9)}`,
+      emoji: pick.emoji,
+      title: pick.title,
+      hint: pick.hint,
+      tag: pick.tag
+    });
+  } catch (error) {
+    console.error("echo/prompt error:", error);
+    res.status(500).json({ error: "echo prompt error" });
+  }
+});
+ 
+// Whisper transcription of a user's raw recording.
+// Accepts multipart form-data with one field: "audio" (m4a/wav/mp3/webm).
+app.post("/echo/transcribe", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
+      return res.status(400).json({ error: "Missing audio" });
+    }
+ 
+    const filename     = (req.file.originalname || "recording.m4a").replace(/[^\w.\-]/g, "_");
+    const contentType  = req.file.mimetype || "audio/mp4";
+ 
+    // Build multipart body for OpenAI's audio/transcriptions endpoint.
+    const boundary = "----LangooEcho" + Math.random().toString(36).slice(2);
+    const parts = [];
+    const push = (s) => parts.push(Buffer.from(s, "utf8"));
+ 
+    push(`--${boundary}\r\n`);
+    push(`Content-Disposition: form-data; name="model"\r\n\r\n`);
+    push(`gpt-4o-mini-transcribe\r\n`);
+ 
+    push(`--${boundary}\r\n`);
+    push(`Content-Disposition: form-data; name="response_format"\r\n\r\n`);
+    push(`json\r\n`);
+ 
+    // Language auto-detect. We assume the user spoke English (learning target),
+    // but we pass no "language" to let the model detect gracefully.
+    push(`--${boundary}\r\n`);
+    push(`Content-Disposition: form-data; name="temperature"\r\n\r\n`);
+    push(`0\r\n`);
+ 
+    push(`--${boundary}\r\n`);
+    push(`Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`);
+    push(`Content-Type: ${contentType}\r\n\r\n`);
+    parts.push(req.file.buffer);
+    push(`\r\n--${boundary}--\r\n`);
+ 
+    const body = Buffer.concat(parts);
+ 
+    const upstream = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length
+      },
+      body
+    });
+ 
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "");
+      console.error("echo/transcribe upstream error:", upstream.status, errText);
+      return res.status(502).json({ error: "transcription upstream error" });
+    }
+ 
+    const data = await upstream.json();
+    const transcript = (data?.text || "").trim();
+ 
+    res.json({
+      transcript,
+      duration_sec: data?.duration || null,
+      language:     data?.language || null
+    });
+  } catch (error) {
+    console.error("echo/transcribe error:", error);
+    res.status(500).json({ error: "transcription error" });
+  }
+});
+ 
+// Core AI rewrite: takes the user's raw English and returns:
+//   - rewritten: a polished, native-sounding version preserving meaning + tone
+//   - improvements: up to 8 word/phrase upgrades (before → after + reason)
+//   - scores: fluency / vocab / grammar / flow / confidence (0-100 each)
+//   - headline: one-line reaction in the user's native language
+//   - tags: quick badges the client can display ("3 phrasal verbs added", etc.)
+app.post("/echo/rewrite", async (req, res) => {
+  try {
+    const {
+      transcript      = "",
+      tone            = "natural",
+      native_language = "fr"
+    } = req.body || {};
+ 
+    const cleaned = (transcript || "").trim();
+    if (!cleaned) {
+      return res.status(400).json({ error: "Missing transcript" });
+    }
+ 
+    const nativeLang = getLanguageName(native_language);
+ 
+    const toneLabel = (() => {
+      switch ((tone || "").toLowerCase()) {
+        case "casual":        return "relaxed, friendly, everyday spoken English with contractions and natural fillers";
+        case "confident":     return "assertive, clear, direct — the way a native speaker sounds when sure of themselves";
+        case "professional":  return "polished, polite, business-appropriate without sounding stiff";
+        case "poetic":        return "lyrical, rhythmic, slightly literary — still completely natural";
+        case "funny":         return "witty, sharp, with well-placed comedic timing — never try-hard";
+        default:              return "natural native English — relaxed, warm, effortless";
+      }
+    })();
+ 
+    const system =
+`You are the flagship AI rewriter of a language-learning app called Langoo.
+ 
+The exercise is called ECHO. A non-native speaker records themselves speaking English freely. Your job is to UPGRADE their transcript into the English version a NATIVE speaker would have actually said — while fully preserving:
+- their meaning
+- their personality
+- their emotional tone
+- their story details
+ 
+Your rewrite is the magic of the app. It must feel like the user themselves, just upgraded. Not a translation. Not a textbook sentence.
+ 
+Target style: ${toneLabel}.
+ 
+STRICT JSON OUTPUT (no markdown, no commentary). Shape:
+{
+  "rewritten": "the polished native-English version. Keep the same length as the user, +/- 20%.",
+  "headline": "one short, warm, encouraging sentence in ${nativeLang} (max 18 words) reacting to the user's story and hinting at what you upgraded.",
+  "improvements": [
+    {
+      "before": "exact user word or short phrase (2-5 words max) that needed work",
+      "after":  "what a native would say instead",
+      "reason": "a super short reason in ${nativeLang} (max 10 words), e.g. 'collocation plus naturelle', 'idiome natif', 'verbe plus précis', 'liaison'."
+    }
+  ],
+  "scores": {
+    "fluency":     0-100,
+    "vocabulary":  0-100,
+    "grammar":     0-100,
+    "flow":        0-100,
+    "confidence":  0-100
+  },
+  "tags": [
+    "short highlights in ${nativeLang}, max 4 tags, max 5 words each, e.g. '3 phrasal verbs ajoutés', 'vocabulaire enrichi', 'intonation native'"
+  ]
+}
+ 
+RULES:
+- rewritten MUST be natural spoken English. NO SAT vocabulary. NO purple prose.
+- Do NOT invent facts. If the user is ambiguous, stay ambiguous.
+- Do NOT add new topics. Do NOT cut what they said.
+- improvements: 3 to 8 items. Skip items that don't truly upgrade the sentence.
+- If the transcript is near-perfect English, return an empty improvements array and keep scores 90+.
+- If the transcript is very broken, keep improvements to the 6-8 highest-impact fixes.
+- Scores must correlate. A truly native speaker gets 95-100. A learner with accent and mistakes 45-70.
+- headline: warm. Like a best friend hyping them up, in ${nativeLang}.
+- Never shame. Never mock. Be specific.`;
+ 
+    const user =
+`USER TRANSCRIPT (raw, as recognized by speech-to-text):
+"""
+${cleaned}
+"""
+ 
+Upgrade it now. Return STRICT JSON only.`;
+ 
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        temperature: 0.6,
+        top_p: 0.95,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user",   content: user }
+        ]
+      })
+    });
+ 
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      console.error("echo/rewrite upstream error:", response.status, errText);
+      return res.status(502).json({ error: "rewrite upstream error" });
+    }
+ 
+    const data = await response.json();
+    const raw  = data?.choices?.[0]?.message?.content || "{}";
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
+ 
+    // Sanitize scores: integers 0-100
+    const clampScore = (v) => {
+      const n = Math.round(Number(v));
+      if (isNaN(n)) return 0;
+      return Math.max(0, Math.min(100, n));
+    };
+    const sIn = parsed.scores || {};
+    const scores = {
+      fluency:    clampScore(sIn.fluency),
+      vocabulary: clampScore(sIn.vocabulary),
+      grammar:    clampScore(sIn.grammar),
+      flow:       clampScore(sIn.flow),
+      confidence: clampScore(sIn.confidence)
+    };
+    const overall = Math.round(
+      (scores.fluency * 0.32) +
+      (scores.vocabulary * 0.20) +
+      (scores.grammar * 0.20) +
+      (scores.flow * 0.16) +
+      (scores.confidence * 0.12)
+    );
+ 
+    const cleanStr = (v) => typeof v === "string" ? v.trim() : "";
+    const arrStr = (a, max) => Array.isArray(a)
+      ? a.map(cleanStr).filter(x => x.length > 0).slice(0, max)
+      : [];
+ 
+    const improvements = Array.isArray(parsed.improvements)
+      ? parsed.improvements.map(it => ({
+          before: cleanStr(it?.before),
+          after:  cleanStr(it?.after),
+          reason: cleanStr(it?.reason)
+        })).filter(it => it.before && it.after).slice(0, 8)
+      : [];
+ 
+    res.json({
+      rewritten:    cleanStr(parsed.rewritten)  || cleaned,
+      headline:     cleanStr(parsed.headline)   || "",
+      improvements,
+      scores,
+      overall,
+      tags:         arrStr(parsed.tags, 4),
+      words_before: cleaned.split(/\s+/).filter(Boolean).length,
+      words_after:  (cleanStr(parsed.rewritten) || cleaned).split(/\s+/).filter(Boolean).length
+    });
+  } catch (error) {
+    console.error("echo/rewrite error:", error);
+    res.status(500).json({ error: "rewrite error" });
+  }
+});
+ 
+// TTS for the rewritten text. Reuses gpt-4o-mini-tts with a warmer, more
+// storytelling-style instruction than the pronunciation endpoint.
+app.post("/echo/speak", async (req, res) => {
+  try {
+    const { text = "", voice = "nova" } = req.body || {};
+    if (!text || typeof text !== "string" || !text.trim()) {
+      return res.status(400).json({ error: "Missing text" });
+    }
+ 
+    const allowed = new Set([
+      "nova", "shimmer", "alloy", "sage", "verse", "coral", "ash", "ballad", "echo", "fable", "onyx"
+    ]);
+    const voiceSafe = allowed.has(voice) ? voice : "nova";
+ 
+    const instructions =
+`Voice: warm, expressive, conversational — like a friend telling a story.
+Pacing: relaxed, not rushed. Natural breaths between clauses.
+Intonation: alive, human, with subtle emotion that matches the meaning.
+No performance, no theatre. Sound like a native person talking into a phone.
+Neutral American English. Crisp articulation. Feel effortless.`;
+ 
+    const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini-tts",
+        voice: voiceSafe,
+        input: text,
+        instructions,
+        format: "mp3"
+      })
+    });
+ 
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "");
+      console.error("echo/speak upstream error:", upstream.status, errText);
+      return res.status(502).json({ error: "tts upstream error" });
+    }
+ 
+    const arrayBuf = await upstream.arrayBuffer();
+    const buf = Buffer.from(arrayBuf);
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Cache-Control", "public, max-age=604800");
+    res.send(buf);
+  } catch (error) {
+    console.error("echo/speak error:", error);
+    res.status(500).json({ error: "echo tts error" });
+  }
+});
+ 
+// ===============================
 // REALTIME WEB PAGE (existing, model aligned)
 // ===============================
 app.get("/realtime-client", (req, res) => {
