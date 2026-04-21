@@ -1005,9 +1005,19 @@ Your rewrite is the magic of the app. It must feel like the user themselves, jus
  
 Target style: ${toneLabel}.
  
+VOCABULARY LEVEL — CRITICAL:
+- The user is roughly B1 (intermediate). They must UNDERSTAND your rewrite.
+- Prefer the 2000 most common English words. Short sentences. Clear rhythm.
+- Avoid rare vocabulary, literary words, uncommon idioms, or multi-layered metaphors unless absolutely necessary.
+- If you must use a less common native expression, choose only ONE per rewrite and keep the rest simple.
+- If the user spoke very simply, keep your rewrite simple too. Do NOT over-polish. Small, meaningful upgrades feel more magical than a vocabulary flex.
+- When in doubt, choose the simpler word. A native speaker isn't always using complicated vocabulary.
+ 
 STRICT JSON OUTPUT (no markdown, no commentary). Shape:
 {
-  "rewritten": "the polished native-English version. Keep the same length as the user, +/- 20%.",
+  "rewritten": "the polished native-English version. Keep the same length as the user, +/- 20%. Accessible B1 vocabulary.",
+  "translation": "a faithful, natural translation of 'rewritten' into ${nativeLang}. Same meaning, same tone.",
+  "transcript_translation": "a faithful, natural translation of the user's original transcript into ${nativeLang}.",
   "headline": "one short, warm, encouraging sentence in ${nativeLang} (max 18 words) reacting to the user's story and hinting at what you upgraded.",
   "improvements": [
     {
@@ -1029,7 +1039,8 @@ STRICT JSON OUTPUT (no markdown, no commentary). Shape:
 }
  
 RULES:
-- rewritten MUST be natural spoken English. NO SAT vocabulary. NO purple prose.
+- rewritten MUST be natural spoken English at a B1 vocabulary level. NO SAT vocabulary. NO purple prose.
+- translation and transcript_translation must be in ${nativeLang}, natural to a native speaker of ${nativeLang}.
 - Do NOT invent facts. If the user is ambiguous, stay ambiguous.
 - Do NOT add new topics. Do NOT cut what they said.
 - improvements: 3 to 8 items. Skip items that don't truly upgrade the sentence.
@@ -1119,7 +1130,9 @@ Upgrade it now. Return STRICT JSON only.`;
       overall,
       tags:         arrStr(parsed.tags, 4),
       words_before: cleaned.split(/\s+/).filter(Boolean).length,
-      words_after:  (cleanStr(parsed.rewritten) || cleaned).split(/\s+/).filter(Boolean).length
+      words_after:  (cleanStr(parsed.rewritten) || cleaned).split(/\s+/).filter(Boolean).length,
+      translation:            cleanStr(parsed.translation) || null,
+      transcript_translation: cleanStr(parsed.transcript_translation) || null
     });
   } catch (error) {
     console.error("echo/rewrite error:", error);
@@ -1131,7 +1144,7 @@ Upgrade it now. Return STRICT JSON only.`;
 // storytelling-style instruction than the pronunciation endpoint.
 app.post("/echo/speak", async (req, res) => {
   try {
-    const { text = "", voice = "nova" } = req.body || {};
+    const { text = "", voice = "shimmer" } = req.body || {};
     if (!text || typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "Missing text" });
     }
@@ -1139,14 +1152,17 @@ app.post("/echo/speak", async (req, res) => {
     const allowed = new Set([
       "nova", "shimmer", "alloy", "sage", "verse", "coral", "ash", "ballad", "echo", "fable", "onyx"
     ]);
-    const voiceSafe = allowed.has(voice) ? voice : "nova";
+    // Default to a warmer, calmer, more human voice (shimmer). "nova" is
+    // slightly bright and "sells"-y for some ears; shimmer is quieter.
+    const voiceSafe = allowed.has(voice) ? voice : "shimmer";
  
     const instructions =
-`Voice: warm, expressive, conversational — like a friend telling a story.
-Pacing: relaxed, not rushed. Natural breaths between clauses.
-Intonation: alive, human, with subtle emotion that matches the meaning.
-No performance, no theatre. Sound like a native person talking into a phone.
-Neutral American English. Crisp articulation. Feel effortless.`;
+`Voice: warm, human, soft-spoken. Like a calm friend explaining something patiently on a phone call.
+Pacing: slow, unhurried, with small real breaths between clauses. Never rushed.
+Intonation: natural, gentle rise and fall. Understated emotion, never theatrical.
+Tone: grounded, honest, reassuring. Sound like a real person — never like a podcast host.
+Neutral American English. Crisp but unforced articulation. No energy bursts. No salesy brightness.
+This is a correction played back to a language learner — it should feel kind and easy to understand.`;
  
     const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
@@ -1177,6 +1193,62 @@ Neutral American English. Crisp articulation. Feel effortless.`;
   } catch (error) {
     console.error("echo/speak error:", error);
     res.status(500).json({ error: "echo tts error" });
+  }
+});
+ 
+// ===============================
+// /translate/simple — on-demand, cached, tiny translation helper used
+// by the ECHO and Fill-the-Blanks exercises to show a "Translation"
+// dropdown in the user's native language. Lightweight, fast, and safe.
+// ===============================
+app.post("/translate/simple", async (req, res) => {
+  try {
+    const { text = "", target_language = "fr" } = req.body || {};
+    const cleaned = (text || "").trim();
+    if (!cleaned) return res.status(400).json({ error: "Missing text" });
+    if (cleaned.length > 600) {
+      return res.status(400).json({ error: "Text too long" });
+    }
+ 
+    const targetName = getLanguageName(target_language);
+ 
+    const system =
+`You are a translation engine for a language-learning app.
+Translate the user's English sentence into ${targetName}.
+Rules:
+- The translation must be natural, simple, and clear to a native speaker of ${targetName}.
+- Preserve meaning and tone exactly.
+- Return ONLY the translated sentence — no explanation, no quotes, no labels.
+- If the input is already in ${targetName}, return it unchanged.`;
+ 
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: system },
+          { role: "user",   content: cleaned }
+        ]
+      })
+    });
+ 
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      console.error("translate/simple upstream error:", response.status, errText);
+      return res.status(502).json({ error: "translate upstream error" });
+    }
+ 
+    const data = await response.json();
+    const translation = (data?.choices?.[0]?.message?.content || "").trim().replace(/^["']|["']$/g, "");
+    res.json({ translation });
+  } catch (error) {
+    console.error("translate/simple error:", error);
+    res.status(500).json({ error: "translate error" });
   }
 });
  
@@ -1239,3 +1311,4 @@ function disconnect() {
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
+ 
