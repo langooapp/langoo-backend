@@ -3,13 +3,13 @@ const multer = require("multer");
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 app.use(express.json({ limit: "2mb" }));
-
+ 
 app.get("/", (req, res) => {
   res.send("Langoo backend is running");
 });
-
+ 
 const PORT = process.env.PORT || 10000;
-
+ 
 // ===============================
 // CHAT (kept untouched — legacy endpoint used by some flows)
 // ===============================
@@ -52,7 +52,7 @@ app.post("/chat", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
+ 
 // ===============================
 // DICTO-FLASH TRANSLATE — dedicated endpoint
 // Auto-detects ANY source language (French, Spanish, Italian, German,
@@ -69,10 +69,10 @@ app.post("/dicto-flash/translate", async (req, res) => {
     if (!trimmed) {
       return res.status(400).json({ error: "Empty query" });
     }
-
+ 
     const system =
 `You are a compact multilingual dictionary for a language-learning app called Langoo.
-
+ 
 RULES:
 - The user's input can be in ANY language of the world. You MUST auto-detect the source language from the text itself — never assume based on any external hint.
 - Your ONLY job is to translate to English and return a dictionary entry.
@@ -89,7 +89,7 @@ RULES:
 - If the user typed in English, return the clearest canonical English form.
 - Examples and synonyms must be in ENGLISH.
 - Return STRICT JSON ONLY — no markdown, no commentary, no code fences.
-
+ 
 JSON SHAPE (required keys, no extras):
 {
   "source": "cleaned original user query (trimmed, corrected typos)",
@@ -99,9 +99,9 @@ JSON SHAPE (required keys, no extras):
   "examples": ["short English example 1", "short English example 2"],
   "synonyms": ["short English synonym 1", "short English synonym 2", "short English synonym 3"]
 }`;
-
+ 
     const user = `Auto-detect the source language of this input and return the English dictionary entry as STRICT JSON:\n\n${trimmed}`;
-
+ 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -118,17 +118,17 @@ JSON SHAPE (required keys, no extras):
         ]
       })
     });
-
+ 
     const data = await response.json();
     const raw  = data?.choices?.[0]?.message?.content || "{}";
     let parsed;
     try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
-
+ 
     const clean = (v) => (typeof v === "string" ? v.trim() : "");
     const arrClean = (a) => Array.isArray(a)
       ? a.map(clean).filter(x => x.length > 0).slice(0, 6)
       : [];
-
+ 
     const out = {
       source:       clean(parsed.source)       || trimmed,
       target:       clean(parsed.target)       || "",
@@ -137,14 +137,14 @@ JSON SHAPE (required keys, no extras):
       examples:     arrClean(parsed.examples),
       synonyms:     arrClean(parsed.synonyms)
     };
-
+ 
     res.json(out);
   } catch (error) {
     console.error("dicto-flash/translate error:", error);
     res.status(500).json({ error: "translate error" });
   }
 });
-
+ 
 // ===============================
 // PRONUNCIATION TTS — ultra-natural OpenAI voice
 // Client (Pronunciation exercise) POSTs { text, voice? } and gets MP3 audio.
@@ -164,14 +164,14 @@ app.post("/pronunciation/tts", async (req, res) => {
       "nova", "shimmer", "alloy", "sage", "verse", "coral", "ash", "ballad", "echo", "fable", "onyx"
     ]);
     const voiceSafe = allowed.has(voice) ? voice : "sage";
-
+ 
     const instructions =
 `Voice: warm, human, patient — like a friendly native-speaker teacher on a phone call.
 Pace: unhurried, with the tiny micro-pauses a real person would leave between words.
 Intonation: natural American English rhythm, gentle musicality, never robotic or sing-songy.
 Articulation: crystal-clear so a learner can catch every consonant, while staying relaxed.
 No theatrical emphasis, no over-smiling tone — just a calm, real human voice.`;
-
+ 
     const ttsRes = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: {
@@ -186,13 +186,13 @@ No theatrical emphasis, no over-smiling tone — just a calm, real human voice.`
         format: "mp3"
       })
     });
-
+ 
     if (!ttsRes.ok) {
       const errText = await ttsRes.text().catch(() => "");
       console.error("pronunciation/tts upstream error:", ttsRes.status, errText);
       return res.status(502).json({ error: "tts upstream error" });
     }
-
+ 
     const arrayBuf = await ttsRes.arrayBuffer();
     const buf = Buffer.from(arrayBuf);
     res.setHeader("Content-Type", "audio/mpeg");
@@ -203,7 +203,7 @@ No theatrical emphasis, no over-smiling tone — just a calm, real human voice.`
     res.status(500).json({ error: "pronunciation tts error" });
   }
 });
-
+ 
 // ===============================
 // REALTIME TOKEN (existing, untouched)
 // ===============================
@@ -243,7 +243,7 @@ function getLanguageName(code) {
     default:   return "the user's native language";
   }
 }
-
+ 
 app.get("/realtime/token", async (req, res) => {
   try {
     const nativeLanguage = getLanguageName(req.query.native_language || "fr");
@@ -278,7 +278,7 @@ app.get("/realtime/token", async (req, res) => {
     res.status(500).json({ error: "Realtime token error" });
   }
 });
-
+ 
 // ===============================
 // VOICE COACH TOKEN — FLAGSHIP  (upgraded: more demanding, more sophisticated)
 // ===============================
@@ -290,24 +290,24 @@ const SCENARIOS = {
   street:  `You are MAX — a friendly London local helping with directions. You use authentic street phrasing and local color.`,
   phone:   `You are MAX — a warm English receptionist. Calls feel real, paced naturally, professional.`,
 };
-
+ 
 const BASE_INSTRUCTIONS = (scenarioPrompt, nativeLang) => `
 ${scenarioPrompt}
-
+ 
 IDENTITY: You are MAX, a native English speaker. Warm, calm, demanding friend — not a cheerleader, not a textbook. Native language support: ${nativeLang}.
-
+ 
 OPENING LINE (mandatory first sentence, exact): "Hello! How are you today? What can I do for you?" Then stop. Wait for the user.
-
+ 
 RULES:
 - Replies SHORT: 1 sentence preferred, 2 max. Never 3.
 - ONE simple question per turn.
 - No "great job" / "well done" / cheerleading. Ever.
 - Speak slowly, natural intonation, contractions OK. Let silence exist.
 - Match the user's register (casual/professional).
-
+ 
 IF USER SEEMS LOST (long pause, "sorry?", unrelated reply, speaks ${nativeLang}):
 → ONE short sentence in ${nativeLang} to rephrase, then model the English again, then resume in English.
-
+ 
 PRONUNCIATION COACHING (flagship job):
 Listen for: "th" → s/z/d/t, r/l or v/w confusion, dropped final consonants, wrong stress, missing linking, vowel collapse.
 When a mispronunciation actually matters (a native would notice):
@@ -315,20 +315,20 @@ When a mispronunciation actually matters (a native would notice):
 2. Model the correct word twice, slow.
 3. Ask them to repeat. If better: "Yes — that's it." If still off: ONE more hint (mouth shape or similar ${nativeLang} sound), then move on. Max 2 retries, ever.
 Do NOT coach every word — only what a native would notice. Keep it inside natural dialogue, never a drill.
-
+ 
 GRAMMAR: Never point out a mistake. RECAST — repeat their idea back correctly, then continue.
   User: "Yesterday I go to shop." You: "Oh, you went to the shop yesterday? What did you buy?"
 Wrong word / false friend: gently slip the right word into your reply. Max one correction per turn.
-
+ 
 COMPREHENSION: If unclear, don't fake it. Ask "Sorry — did you mean X or Y?" in English. If stuck, ONE sentence in ${nativeLang}, then back to English.
-
+ 
 PROGRESSIVE CHALLENGE: After a few turns, gently raise the bar (richer vocab, one phrasal verb or idiom, slightly more open questions). If they struggle: shorten, slow down, drop register.
-
+ 
 BILINGUAL: Default English. Switch to ${nativeLang} only briefly (ONE sentence) for real need: translation, stuck user, explicit grammar question. Always return to English.
-
+ 
 GOAL: Make the user sound less like a tourist and more like a native. Warm, demanding, real. Never lecture. Never cheer.
 `;
-
+ 
 app.get("/voice-coach/token", async (req, res) => {
   try {
     const scenarioId     = req.query.scenario        || "free";
@@ -336,7 +336,7 @@ app.get("/voice-coach/token", async (req, res) => {
     const nativeLang     = getLanguageName(nativeLangCode);
     const scenarioPrompt = SCENARIOS[scenarioId] || SCENARIOS["free"];
     const instructions   = BASE_INSTRUCTIONS(scenarioPrompt, nativeLang);
-
+ 
     const response = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
@@ -348,10 +348,12 @@ app.get("/voice-coach/token", async (req, res) => {
           type: "realtime",
           model: "gpt-realtime",
           instructions: instructions,
-          // Cap MAX's reply length → ~6-7 seconds of audio max per turn.
-          // Shorter replies = lower output audio cost (~-15%) without hurting UX,
-          // because MAX is already instructed to keep it to 1-2 sentences.
-          max_response_output_tokens: 120,
+          // NOTE: on avait "max_response_output_tokens: 120" ici pour capper
+          // la longueur audio de MAX, mais la nouvelle API Realtime GA
+          // (endpoint /v1/realtime/client_secrets) rejette ce paramètre au
+          // niveau session ("Unknown parameter: session.max_response_output_tokens").
+          // On le retire: la consigne "1 phrase, 2 max, jamais 3" dans le prompt
+          // fait déjà le travail de limitation de longueur. Aucune perte côté coût.
           audio: {
             // marin = newest, most natural-sounding voice in the GA lineup.
             // Warmer, calmer, less "AI-ish" than shimmer/alloy.
@@ -374,7 +376,7 @@ app.get("/voice-coach/token", async (req, res) => {
         }
       })
     });
-
+ 
     const data = await response.json();
     if (data.error) {
       console.error("OpenAI error:", data.error);
@@ -386,12 +388,12 @@ app.get("/voice-coach/token", async (req, res) => {
     res.status(500).json({ error: "Voice coach token error" });
   }
 });
-
+ 
 // ===============================
 // NATIVE MODE — "Can you fool a native?"
 // Phonetic challenge exercise (replaces Real Talk).
 // ===============================
-
+ 
 const NATIVE_THEME_LABELS = {
   free:   "everyday life, random, spontaneous",
   street: "street life, directions, casual encounters, small talk",
@@ -399,7 +401,7 @@ const NATIVE_THEME_LABELS = {
   travel: "travel, airport, hotel, transport, booking, tourism",
   work:   "office, job interview, meeting, professional phone call"
 };
-
+ 
 // Strict word-count ranges per difficulty. The server counts words in the
 // generated sentence and regenerates if it falls outside the range.
 const NATIVE_WORD_RANGES = {
@@ -408,7 +410,7 @@ const NATIVE_WORD_RANGES = {
   hard:      { min: 11, max: 16 },
   nightmare: { min: 15, max: 22 }
 };
-
+ 
 const NATIVE_DIFFICULTY_LABELS = {
   easy:
 `VERY SHORT BEGINNER sentence. HARD LIMIT: 3 to 5 words total, never more.
@@ -444,7 +446,7 @@ Examples (shape + length):
 - "Honestly she shoulda told him straight up that the whole thing was pretty much a waste of his time anyway."
 - "You're telling me he literally walked out of the meeting without saying a single word to anyone the entire afternoon?"`
 };
-
+ 
 // Count REAL spoken words in a sentence. Contractions like "I'm", "don't"
 // count as ONE word (matches how a user would say them). Punctuation is ignored.
 function nativeWordCount(text) {
@@ -456,7 +458,7 @@ function nativeWordCount(text) {
   if (!cleaned) return 0;
   return cleaned.split(/\s+/).filter(Boolean).length;
 }
-
+ 
 app.post("/native-mode/sentence", async (req, res) => {
   try {
     const {
@@ -465,18 +467,18 @@ app.post("/native-mode/sentence", async (req, res) => {
       theme           = "free",
       recent          = []
     } = req.body || {};
-
+ 
     const nativeLang      = getLanguageName(native_language);
     const themeLabel      = NATIVE_THEME_LABELS[theme]      || NATIVE_THEME_LABELS.free;
     const difficultyLabel = NATIVE_DIFFICULTY_LABELS[difficulty] || NATIVE_DIFFICULTY_LABELS.medium;
     const range           = NATIVE_WORD_RANGES[difficulty]   || NATIVE_WORD_RANGES.medium;
-
+ 
     const avoid = Array.isArray(recent) ? recent.slice(-30).join(" | ") : "";
-
+ 
     const buildSystem = (retryHint = "") => (
 `You generate ONE short English sentence for a pronunciation challenge called "Native Mode".
 The goal: the user must repeat it out loud and try to sound native.
-
+ 
 Rules:
 - Output STRICT JSON only, no markdown, no commentary.
 - JSON shape:
@@ -496,9 +498,9 @@ Rules:
 - Be creative, surprising, fresh. Vary openings, grammar, registers.
 - No quotation marks inside "text".${retryHint}`
     );
-
+ 
     const userMsg = `Generate a fresh ${difficulty} ${theme} sentence now. Remember: strict JSON only, between ${range.min} and ${range.max} words.`;
-
+ 
     async function tryGenerate(retryHint = "") {
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -521,7 +523,7 @@ Rules:
       const raw  = data?.choices?.[0]?.message?.content || "{}";
       try { return JSON.parse(raw); } catch (_) { return {}; }
     }
-
+ 
     // Generate, then validate word count. Up to 2 retries with a stronger hint.
     let parsed = await tryGenerate();
     let wc = nativeWordCount(parsed?.text);
@@ -533,7 +535,7 @@ Rules:
       wc = nativeWordCount(parsed?.text);
       attempts++;
     }
-
+ 
     // If STILL out of range after retries, trim/fallback on the easy tier so
     // we never ship a 15-word "easy" sentence.
     if (wc < range.min || wc > range.max) {
@@ -546,7 +548,7 @@ Rules:
         };
       }
     }
-
+ 
     const out = {
       id:          parsed.id          || `nm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       text:        parsed.text        || "What are you up to this weekend?",
@@ -555,16 +557,16 @@ Rules:
       theme:       parsed.theme       || theme,
       difficulty:  parsed.difficulty  || difficulty
     };
-
+ 
     console.log(`[native-mode] difficulty=${difficulty} words=${nativeWordCount(out.text)} range=${range.min}-${range.max} attempts=${attempts}`);
-
+ 
     res.json(out);
   } catch (error) {
     console.error("native-mode/sentence error:", error);
     res.status(500).json({ error: "native-mode sentence error" });
   }
 });
-
+ 
 app.post("/native-mode/score", async (req, res) => {
   try {
     const {
@@ -573,38 +575,38 @@ app.post("/native-mode/score", async (req, res) => {
       confidence      = 0,        // 0..1 — Apple Speech recognizer confidence
       native_language = "fr"
     } = req.body || {};
-
+ 
     if (!target || typeof target !== "string") {
       return res.status(400).json({ error: "Missing target" });
     }
-
+ 
     const nativeLang = getLanguageName(native_language);
-
+ 
     // Strip ALL punctuation for comparison — punctuation is not spoken.
     const stripPunct = (s) => (s || "")
       .toLowerCase()
       .replace(/[\p{P}\p{S}]+/gu, " ")   // punctuation + symbols
       .replace(/\s+/g, " ")
       .trim();
-
+ 
     const cleanTarget     = stripPunct(target);
     const cleanTranscript = stripPunct(transcript);
-
+ 
     // Clamp confidence to 0..1 and render as percentage for the prompt
     const confClamped = Math.max(0, Math.min(1, Number(confidence) || 0));
     const confPct     = Math.round(confClamped * 100);
-
+ 
     const system =
 `You are a STRICT phonetic pronunciation judge for an English-learning app called Langoo.
-
+ 
 Your job: score how NATIVE the user sounded when they tried to repeat a target sentence.
 The PRIMARY goal of the exercise is PHONETIC ACCURACY. Word accuracy matters less than sounding native.
-
+ 
 You will receive:
 - TARGET: the sentence the user was asked to say (with punctuation).
 - TRANSCRIPT: what Apple's on-device speech recognizer heard (best guess in words).
 - RECOGNIZER CONFIDENCE: a 0-100 number reflecting how clearly the recognizer understood the user. Low confidence strongly suggests unclear pronunciation.
-
+ 
 STRICT RULES:
 1. Punctuation is NEVER spoken. IGNORE ALL commas, periods, question marks, exclamation marks, apostrophes, hyphens, quotes, etc. Compare the spoken words ONLY. A missing pause for a comma NEVER counts as an error.
 2. Casing, accents, and extra spaces are irrelevant.
@@ -617,7 +619,7 @@ STRICT RULES:
    - confidence < 45 OR transcript barely matches → tourist (0-39).
 6. If the transcript words match perfectly but confidence is high, award 95-100. Do NOT deduct for missing punctuation.
 7. If transcript is empty or gibberish, score <= 15.
-
+ 
 OUTPUT FORMAT — STRICT JSON ONLY, no markdown:
 {
   "score": integer 0-100,
@@ -625,24 +627,24 @@ OUTPUT FORMAT — STRICT JSON ONLY, no markdown:
   "feedback_native": one short sentence (max 18 words) in ${nativeLang}, warm, specific, actionable. Focus on PHONETIC advice (which sound to soften, which vowel to relax, linking, stress).
   "feedback_english": one short sentence in English, same vibe, same length.
 }
-
+ 
 Feedback rules:
 - Never shame. Encouraging but honest.
 - If accuracy is high but confidence is low → praise the words, point at pronunciation clarity.
 - If a specific word likely tripped them → name it.
 - Never mention punctuation in the feedback.`;
-
+ 
     const user =
 `TARGET: ${target}
 TARGET (compare form): ${cleanTarget}
-
+ 
 TRANSCRIPT: ${transcript || "(empty)"}
 TRANSCRIPT (compare form): ${cleanTranscript || "(empty)"}
-
+ 
 RECOGNIZER CONFIDENCE: ${confPct}/100
-
+ 
 Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
-
+ 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -659,17 +661,17 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
         ]
       })
     });
-
+ 
     const data = await response.json();
     const raw  = data?.choices?.[0]?.message?.content || "{}";
-
+ 
     let parsed;
     try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
-
+ 
     let score = parseInt(parsed.score, 10);
     if (isNaN(score)) score = 0;
     score = Math.max(0, Math.min(100, score));
-
+ 
     const grades = ["tourist", "learner", "speaker", "native"];
     let grade = grades.includes(parsed.grade) ? parsed.grade : null;
     if (!grade) {
@@ -678,7 +680,7 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
       else if (score >= 40) grade = "learner";
       else                  grade = "tourist";
     }
-
+ 
     res.json({
       score,
       grade,
@@ -690,7 +692,7 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
     res.status(500).json({ error: "native-mode score error" });
   }
 });
-
+ 
 // ===============================
 // ECHO 🪞 — flagship new exercise
 // "Speak. Hear yourself, but native."
@@ -698,7 +700,7 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
 // polished native English preserving their personality → TTS speaks
 // the rewrite → client shows BEFORE/AFTER + fluency scores + share card.
 // ===============================
-
+ 
 // --- Situational prompt pool: real-world English scenarios the learner must
 //     handle out loud. Either a practical roleplay (At the hotel, at the
 //     restaurant, at the airport, …) or a simple opinion question
@@ -732,7 +734,7 @@ const ECHO_PROMPTS = [
   { emoji: "🎤", title: "What is your name and where are you from?",            hint: "Introduce yourself simply.",      tag: "simple" },
   { emoji: "🧭", title: "Where do you live?",                                   hint: "City, country, house or flat?",   tag: "simple" },
   { emoji: "🚶", title: "How old are you?",                                     hint: "Say when you were born.",         tag: "simple" },
-
+ 
   // --- SIMPLE roleplays — everyday, short, realistic
   { emoji: "☕", title: "Order a coffee at a café.",                             hint: "Say size and pay.",               tag: "simple-roleplay" },
   { emoji: "🧀", title: "Ask for bread and cheese at a shop.",                  hint: "Say thank you at the end.",       tag: "simple-roleplay" },
@@ -747,7 +749,7 @@ const ECHO_PROMPTS = [
   { emoji: "🧭", title: "Ask a stranger where the bus stop is.",                hint: "Be polite and say thank you.",    tag: "simple-roleplay" },
   { emoji: "📮", title: "Send a postcard at the post office.",                  hint: "Ask the price.",                  tag: "simple-roleplay" },
   { emoji: "🛍️", title: "Ask the seller how much a shirt costs.",               hint: "Say if you want it or not.",      tag: "simple-roleplay" },
-
+ 
   // --- A FEW harder situational prompts (kept short but more detailed)
   { emoji: "🏨", title: "At the hotel, book a room for two nights with breakfast.", hint: "Dates, number of guests.",           tag: "advanced-roleplay" },
   { emoji: "✈️", title: "At airport check-in, ask for a window seat.",               hint: "Say your destination.",              tag: "advanced-roleplay" },
@@ -756,7 +758,7 @@ const ECHO_PROMPTS = [
   { emoji: "🎯", title: "Describe a goal you want to achieve this year.",              hint: "Why is it important to you?",      tag: "advanced-opinion" },
   { emoji: "🌍", title: "If you could visit any country, where would you go and why?", hint: "Two reasons.",                     tag: "advanced-opinion" }
 ];
-
+ 
 app.post("/echo/prompt", (req, res) => {
   try {
     const { recent = [] } = req.body || {};
@@ -776,7 +778,7 @@ app.post("/echo/prompt", (req, res) => {
     res.status(500).json({ error: "echo prompt error" });
   }
 });
-
+ 
 // Whisper transcription of a user's raw recording.
 // Accepts multipart form-data with one field: "audio" (m4a/wav/mp3/webm).
 app.post("/echo/transcribe", upload.single("audio"), async (req, res) => {
@@ -784,37 +786,37 @@ app.post("/echo/transcribe", upload.single("audio"), async (req, res) => {
     if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
       return res.status(400).json({ error: "Missing audio" });
     }
-
+ 
     const filename     = (req.file.originalname || "recording.m4a").replace(/[^\w.\-]/g, "_");
     const contentType  = req.file.mimetype || "audio/mp4";
-
+ 
     // Build multipart body for OpenAI's audio/transcriptions endpoint.
     const boundary = "----LangooEcho" + Math.random().toString(36).slice(2);
     const parts = [];
     const push = (s) => parts.push(Buffer.from(s, "utf8"));
-
+ 
     push(`--${boundary}\r\n`);
     push(`Content-Disposition: form-data; name="model"\r\n\r\n`);
     push(`gpt-4o-mini-transcribe\r\n`);
-
+ 
     push(`--${boundary}\r\n`);
     push(`Content-Disposition: form-data; name="response_format"\r\n\r\n`);
     push(`json\r\n`);
-
+ 
     // Language auto-detect. We assume the user spoke English (learning target),
     // but we pass no "language" to let the model detect gracefully.
     push(`--${boundary}\r\n`);
     push(`Content-Disposition: form-data; name="temperature"\r\n\r\n`);
     push(`0\r\n`);
-
+ 
     push(`--${boundary}\r\n`);
     push(`Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`);
     push(`Content-Type: ${contentType}\r\n\r\n`);
     parts.push(req.file.buffer);
     push(`\r\n--${boundary}--\r\n`);
-
+ 
     const body = Buffer.concat(parts);
-
+ 
     const upstream = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: {
@@ -824,16 +826,16 @@ app.post("/echo/transcribe", upload.single("audio"), async (req, res) => {
       },
       body
     });
-
+ 
     if (!upstream.ok) {
       const errText = await upstream.text().catch(() => "");
       console.error("echo/transcribe upstream error:", upstream.status, errText);
       return res.status(502).json({ error: "transcription upstream error" });
     }
-
+ 
     const data = await upstream.json();
     const transcript = (data?.text || "").trim();
-
+ 
     res.json({
       transcript,
       duration_sec: data?.duration || null,
@@ -844,7 +846,7 @@ app.post("/echo/transcribe", upload.single("audio"), async (req, res) => {
     res.status(500).json({ error: "transcription error" });
   }
 });
-
+ 
 // Core AI rewrite: takes the user's raw English and returns:
 //   - rewritten: a polished, native-sounding version preserving meaning + tone
 //   - improvements: up to 8 word/phrase upgrades (before → after + reason)
@@ -860,14 +862,14 @@ app.post("/echo/rewrite", async (req, res) => {
       prompt_title    = "",
       prompt_hint     = ""
     } = req.body || {};
-
+ 
     const cleaned = (transcript || "").trim();
     if (!cleaned) {
       return res.status(400).json({ error: "Missing transcript" });
     }
-
+ 
     const nativeLang = getLanguageName(native_language);
-
+ 
     const toneLabel = (() => {
       switch ((tone || "").toLowerCase()) {
         case "casual":        return "relaxed, friendly, everyday spoken English with contractions and natural fillers";
@@ -878,29 +880,29 @@ app.post("/echo/rewrite", async (req, res) => {
         default:              return "natural native English — relaxed, warm, effortless";
       }
     })();
-
+ 
     const promptBlock = prompt_title
       ? `\nSITUATIONAL PROMPT THE USER WAS ANSWERING:\n- Task: "${String(prompt_title).replace(/"/g, "'")}"\n- Hint: "${String(prompt_hint || "").replace(/"/g, "'")}"\n\nThe user's transcript MUST be evaluated as an answer to that specific situation.\nIf the user answered off-topic (e.g. the task was "Ask the taxi how much you owe" but they talked about their weekend), their CONTENT score must be severely penalized (under 40/100 for fluency and flow) — even if their English was otherwise clean. Reflect this in the headline and improvements too.\n`
       : "";
-
+ 
     const system =
 `You are the flagship AI coach of a language-learning app called Langoo.
-
+ 
 The exercise is called ECHO. A non-native speaker is given an English task (usually a real-world situational roleplay — "At the hotel, ask for a room", "At the restaurant, ask for the bill" — or a simple opinion question) and records themselves answering it out loud. You receive their raw speech-to-text transcript.${promptBlock}
-
+ 
 You do TWO things at once:
 (A) UPGRADE their transcript into the English version a NATIVE speaker would have actually said in that exact situation — preserving meaning, personality and emotion.
 (B) STRICTLY SCORE their performance on THREE things: content appropriateness to the situation, English correctness, and phonetic clarity (inferred from how clean the transcript came out — garbled, partial, or fragmented transcripts are strong signals of weak pronunciation and MUST lower the "confidence" and "fluency" scores).
-
+ 
 Target style for the rewrite: ${toneLabel}.
-
+ 
 VOCABULARY LEVEL — CRITICAL:
 - The user is roughly B1 (intermediate). They must UNDERSTAND your rewrite.
 - Prefer the 2000 most common English words. Short sentences. Clear rhythm.
 - Avoid rare vocabulary, literary words, uncommon idioms, or multi-layered metaphors unless absolutely necessary.
 - If you must use a less common native expression, choose only ONE per rewrite and keep the rest simple.
 - If the user spoke very simply, keep your rewrite simple too.
-
+ 
 STRICT JSON OUTPUT (no markdown, no commentary). Shape:
 {
   "rewritten": "the polished native-English version, rewritten so it actually answers the situational prompt. Same length as the user +/- 20%. Accessible B1 vocabulary.",
@@ -925,7 +927,7 @@ STRICT JSON OUTPUT (no markdown, no commentary). Shape:
     "short highlights in ${nativeLang}, max 4 tags, max 5 words each"
   ]
 }
-
+ 
 SCORING RUBRIC — BE STRICT:
 - fluency     = answers the situational task naturally and without long pauses or broken syntax.
 - vocabulary  = words chosen are appropriate for the situation (e.g. "check in", "reservation", "the bill").
@@ -936,7 +938,7 @@ SCORING RUBRIC — BE STRICT:
 - A learner who answers the task with some grammar/accent issues gets 55-80.
 - A learner who clearly answered a DIFFERENT topic gets below 40 on fluency AND flow, regardless of their English.
 - A mostly unintelligible transcript gets confidence and fluency below 45.
-
+ 
 OTHER RULES:
 - rewritten MUST naturally answer the situational prompt in native English.
 - translation and transcript_translation must be in ${nativeLang}.
@@ -945,15 +947,15 @@ OTHER RULES:
 - If the transcript is near-perfect, return an empty improvements array and keep scores 90+.
 - headline: warm. Like a best friend hyping them up, in ${nativeLang}.
 - Never shame. Never mock. Be specific.`;
-
+ 
     const user =
 `USER TRANSCRIPT (raw, as recognized by speech-to-text):
 """
 ${cleaned}
 """
-
+ 
 Upgrade it now. Return STRICT JSON only.`;
-
+ 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -971,18 +973,18 @@ Upgrade it now. Return STRICT JSON only.`;
         ]
       })
     });
-
+ 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
       console.error("echo/rewrite upstream error:", response.status, errText);
       return res.status(502).json({ error: "rewrite upstream error" });
     }
-
+ 
     const data = await response.json();
     const raw  = data?.choices?.[0]?.message?.content || "{}";
     let parsed;
     try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
-
+ 
     // Sanitize scores: integers 0-100
     const clampScore = (v) => {
       const n = Math.round(Number(v));
@@ -1004,12 +1006,12 @@ Upgrade it now. Return STRICT JSON only.`;
       (scores.flow * 0.16) +
       (scores.confidence * 0.12)
     );
-
+ 
     const cleanStr = (v) => typeof v === "string" ? v.trim() : "";
     const arrStr = (a, max) => Array.isArray(a)
       ? a.map(cleanStr).filter(x => x.length > 0).slice(0, max)
       : [];
-
+ 
     const improvements = Array.isArray(parsed.improvements)
       ? parsed.improvements.map(it => ({
           before: cleanStr(it?.before),
@@ -1017,7 +1019,7 @@ Upgrade it now. Return STRICT JSON only.`;
           reason: cleanStr(it?.reason)
         })).filter(it => it.before && it.after).slice(0, 8)
       : [];
-
+ 
     res.json({
       rewritten:    cleanStr(parsed.rewritten)  || cleaned,
       headline:     cleanStr(parsed.headline)   || "",
@@ -1035,7 +1037,7 @@ Upgrade it now. Return STRICT JSON only.`;
     res.status(500).json({ error: "rewrite error" });
   }
 });
-
+ 
 // TTS for the rewritten text. Reuses gpt-4o-mini-tts with a warmer, more
 // storytelling-style instruction than the pronunciation endpoint.
 app.post("/echo/speak", async (req, res) => {
@@ -1044,14 +1046,14 @@ app.post("/echo/speak", async (req, res) => {
     if (!text || typeof text !== "string" || !text.trim()) {
       return res.status(400).json({ error: "Missing text" });
     }
-
+ 
     const allowed = new Set([
       "nova", "shimmer", "alloy", "sage", "verse", "coral", "ash", "ballad", "echo", "fable", "onyx"
     ]);
     // Default to a warmer, calmer, more human voice (shimmer). "nova" is
     // slightly bright and "sells"-y for some ears; shimmer is quieter.
     const voiceSafe = allowed.has(voice) ? voice : "shimmer";
-
+ 
     const instructions =
 `Voice: warm, human, soft-spoken. Like a calm friend explaining something patiently on a phone call.
 Pacing: slow, unhurried, with small real breaths between clauses. Never rushed.
@@ -1059,7 +1061,7 @@ Intonation: natural, gentle rise and fall. Understated emotion, never theatrical
 Tone: grounded, honest, reassuring. Sound like a real person — never like a podcast host.
 Neutral American English. Crisp but unforced articulation. No energy bursts. No salesy brightness.
 This is a correction played back to a language learner — it should feel kind and easy to understand.`;
-
+ 
     const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: {
@@ -1074,13 +1076,13 @@ This is a correction played back to a language learner — it should feel kind a
         format: "mp3"
       })
     });
-
+ 
     if (!upstream.ok) {
       const errText = await upstream.text().catch(() => "");
       console.error("echo/speak upstream error:", upstream.status, errText);
       return res.status(502).json({ error: "tts upstream error" });
     }
-
+ 
     const arrayBuf = await upstream.arrayBuffer();
     const buf = Buffer.from(arrayBuf);
     res.setHeader("Content-Type", "audio/mpeg");
@@ -1091,7 +1093,7 @@ This is a correction played back to a language learner — it should feel kind a
     res.status(500).json({ error: "echo tts error" });
   }
 });
-
+ 
 // ===============================
 // /translate/simple — on-demand, cached, tiny translation helper used
 // by the ECHO and Fill-the-Blanks exercises to show a "Translation"
@@ -1105,9 +1107,9 @@ app.post("/translate/simple", async (req, res) => {
     if (cleaned.length > 600) {
       return res.status(400).json({ error: "Text too long" });
     }
-
+ 
     const targetName = getLanguageName(target_language);
-
+ 
     const system =
 `You are a translation engine for a language-learning app.
 Translate the user's English sentence into ${targetName}.
@@ -1116,7 +1118,7 @@ Rules:
 - Preserve meaning and tone exactly.
 - Return ONLY the translated sentence — no explanation, no quotes, no labels.
 - If the input is already in ${targetName}, return it unchanged.`;
-
+ 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -1132,13 +1134,13 @@ Rules:
         ]
       })
     });
-
+ 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
       console.error("translate/simple upstream error:", response.status, errText);
       return res.status(502).json({ error: "translate upstream error" });
     }
-
+ 
     const data = await response.json();
     const translation = (data?.choices?.[0]?.message?.content || "").trim().replace(/^["']|["']$/g, "");
     res.json({ translation });
@@ -1147,7 +1149,7 @@ Rules:
     res.status(500).json({ error: "translate error" });
   }
 });
-
+ 
 // ===============================
 // REALTIME WEB PAGE (existing, model aligned)
 // ===============================
@@ -1203,7 +1205,7 @@ function disconnect() {
 </body>
 </html>`);
 });
-
+ 
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
