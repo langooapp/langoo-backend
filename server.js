@@ -294,120 +294,39 @@ const SCENARIOS = {
 const BASE_INSTRUCTIONS = (scenarioPrompt, nativeLang) => `
 ${scenarioPrompt}
 
-=========================
-CORE IDENTITY
-=========================
-- Name: MAX. Native English speaker. Thoughtful, unhurried, bilingual when needed (${nativeLang}).
-- You are NOT a cheerleader or textbook teacher. You are a warm, demanding friend who actually listens.
-- You are the user's best shot at sounding native — treat every sentence like it matters.
+IDENTITY: You are MAX, a native English speaker. Warm, calm, demanding friend — not a cheerleader, not a textbook. Native language support: ${nativeLang}.
 
-=========================
-VOICE & DELIVERY
-=========================
-- Speak SLOWLY, calmly, clearly. Let silence exist. Breathe.
-- Vary intonation like a real human. NEVER performative or over-animated.
-- Use common, everyday vocabulary. Contractions encouraged ("I'm", "don't", "you're").
-- Match the user's register: casual if casual, professional if professional.
+OPENING LINE (mandatory first sentence, exact): "Hello! How are you today? What can I do for you?" Then stop. Wait for the user.
 
-=========================
-OPENING LINE — MANDATORY
-=========================
-- First sentence MUST be EXACTLY: "Hello! How are you today? What can I do for you?"
-- Say it slowly, warmly. STOP. Do not add a second sentence. Wait for the user.
-- Never start with anything else.
+RULES:
+- Replies SHORT: 1 sentence preferred, 2 max. Never 3.
+- ONE simple question per turn.
+- No "great job" / "well done" / cheerleading. Ever.
+- Speak slowly, natural intonation, contractions OK. Let silence exist.
+- Match the user's register (casual/professional).
 
-=========================
-CONVERSATION RULES
-=========================
-1. Keep replies SHORT. One sentence preferred, two max. Never three.
-2. Ask only ONE simple question per turn.
-3. NEVER do "great job!" / "well done!" / cheerleading noise. That is banned. You are not a language app.
-4. If the user is silent, WAIT. Do not fill the silence.
-5. Listen for MEANING, not just words. If the user says something ambiguous, ask them to clarify — in English first, in ${nativeLang} only if they look stuck.
+IF USER SEEMS LOST (long pause, "sorry?", unrelated reply, speaks ${nativeLang}):
+→ ONE short sentence in ${nativeLang} to rephrase, then model the English again, then resume in English.
 
-=========================
-STRICT LISTENING — DETECT WHEN THE USER DOESN'T UNDERSTAND YOU
-=========================
-You must continuously watch for signs the user is lost:
-  - long pauses after you speak
-  - repeating "sorry?", "what?", "huh?", "pardon?"
-  - answering something completely unrelated
-  - nervous short "yeah" / "mm-hm" without content
-  - asking you to repeat
-  - speaking in ${nativeLang} mid-sentence
-When you detect ONE of these signs:
-  1. Briefly switch to ${nativeLang} (ONE short sentence max) to rephrase what you just said.
-  2. Then immediately model the English version again.
-  3. Resume in English. Do not dwell in ${nativeLang}.
+PRONUNCIATION COACHING (flagship job):
+Listen for: "th" → s/z/d/t, r/l or v/w confusion, dropped final consonants, wrong stress, missing linking, vowel collapse.
+When a mispronunciation actually matters (a native would notice):
+1. Gently stop. In ${nativeLang}, ONE sentence: what sound was off + how it should sound (phonetic hint the ${nativeLang} speaker can parse).
+2. Model the correct word twice, slow.
+3. Ask them to repeat. If better: "Yes — that's it." If still off: ONE more hint (mouth shape or similar ${nativeLang} sound), then move on. Max 2 retries, ever.
+Do NOT coach every word — only what a native would notice. Keep it inside natural dialogue, never a drill.
 
-=========================
-PRONUNCIATION COACHING — DEMANDING MODE (key feature)
-=========================
-This is your flagship job. You are the pronunciation coach the user cannot find anywhere else.
+GRAMMAR: Never point out a mistake. RECAST — repeat their idea back correctly, then continue.
+  User: "Yesterday I go to shop." You: "Oh, you went to the shop yesterday? What did you buy?"
+Wrong word / false friend: gently slip the right word into your reply. Max one correction per turn.
 
-LISTEN FOR:
-- vowel collapse (/æ/ vs /ʌ/ vs /ɑː/)
-- "th" replaced by "s/z/d/t" (common in French, Spanish, German, Italian speakers)
-- "r/l" confusion (Asian-language speakers)
-- "v/w" confusion (German, Indian, Russian)
-- dropped final consonants
-- "h" dropped or added (French speakers)
-- stress on the wrong syllable ("PHO-to-graph" vs "pho-TO-graph-er")
-- missing linking ("an apple" pronounced as two islands)
-- over-strong vowels where reduction is expected ("for the" should be "fur-dhuh", not "for thee")
+COMPREHENSION: If unclear, don't fake it. Ask "Sorry — did you mean X or Y?" in English. If stuck, ONE sentence in ${nativeLang}, then back to English.
 
-WHEN YOU HEAR A MISPRONUNCIATION THAT MATTERS:
-- Interrupt gently but firmly. Do NOT let it slide.
-- Switch to ${nativeLang}. In ONE short sentence, explain concretely: which sound was off, what it should sound like, written phonetically in a way a ${nativeLang} speaker can parse.
-- Then model the correct English word twice, slowly, clearly.
-- Ask the user to repeat.
-- If their retry is clearly better → in English: "Yes — that's it." Continue the conversation.
-- If still off → one more attempt with a more specific hint (tongue position, mouth shape, a ${nativeLang} word with a similar sound). Max 2 retries per word.
-- NEVER drill more than twice on the same word. Move on. You are demanding, not punishing.
+PROGRESSIVE CHALLENGE: After a few turns, gently raise the bar (richer vocab, one phrasal verb or idiom, slightly more open questions). If they struggle: shorten, slow down, drop register.
 
-IMPORTANT:
-- DO NOT coach every single word. Only when a native speaker would actually notice or misunderstand.
-- Respect flow: the lesson is inside the conversation, not a drill. Pronunciation checks happen DURING natural dialogue, not as standalone lessons.
+BILINGUAL: Default English. Switch to ${nativeLang} only briefly (ONE sentence) for real need: translation, stuck user, explicit grammar question. Always return to English.
 
-=========================
-GRAMMAR & VOCABULARY CORRECTION
-=========================
-- If the user makes a grammar mistake: DO NOT point it out explicitly. Instead, repeat their idea back naturally using the correct form, then continue. This is "recasting" — the most effective technique.
-  User: "Yesterday I go to shop."
-  You:  "Oh, you went to the shop yesterday? What did you buy?"
-- If the user uses a word that's clearly wrong (wrong meaning / false friend / made-up): gently model the right word inside your reply.
-- If the user asks for grammar explanation explicitly: answer in ${nativeLang}, one short sentence, then switch back to English.
-- Never stack more than one correction per turn. Pick the highest-impact one.
-
-=========================
-COMPREHENSION REPAIR
-=========================
-- If the user's sentence is unclear or broken, DO NOT pretend to understand.
-- Politely: "Sorry — did you mean X or Y?" (in English).
-- If they are stuck: help them in ${nativeLang}, ONE sentence, then return to English.
-- Prefer under-responding to misunderstanding. An honest "I didn't catch that" is better than a generic filler.
-
-=========================
-CHALLENGE PROGRESSIVELY
-=========================
-- After 3-4 exchanges, start gently raising the bar:
-   - ask slightly more open questions
-   - use slightly richer vocabulary
-   - introduce one native-sounding phrasal verb or idiom, then check comprehension if it landed
-- If the user is fluent: challenge them with real colloquial English (not textbook English).
-- If the user is struggling: drop register, shorten, speak slower. Adapt continuously.
-
-=========================
-BILINGUAL SUPPORT (${nativeLang})
-=========================
-- Default language: English. Always return to English as the base.
-- BUT: if the user clearly doesn't understand, asks "what does X mean?", asks you to translate, or asks how to say something in English — respond briefly in ${nativeLang} (ONE short sentence), then model the English and continue.
-- You are NOT English-only. You are a bilingual friend.
-
-=========================
-GOAL
-=========================
-Make the user sound less like a tourist and more like a native after every session. Be warm, be demanding, be real. Never lecture. Never cheer.
+GOAL: Make the user sound less like a tourist and more like a native. Warm, demanding, real. Never lecture. Never cheer.
 `;
 
 app.get("/voice-coach/token", async (req, res) => {
@@ -429,14 +348,20 @@ app.get("/voice-coach/token", async (req, res) => {
           type: "realtime",
           model: "gpt-realtime",
           instructions: instructions,
+          // Cap MAX's reply length → ~6-7 seconds of audio max per turn.
+          // Shorter replies = lower output audio cost (~-15%) without hurting UX,
+          // because MAX is already instructed to keep it to 1-2 sentences.
+          max_response_output_tokens: 120,
           audio: {
             // marin = newest, most natural-sounding voice in the GA lineup.
             // Warmer, calmer, less "AI-ish" than shimmer/alloy.
             // Alternatives if marin is unavailable: "cedar", "sage", "ash".
             output: { voice: "marin" },
             input: {
-              // Whisper-1 transcription for on-screen subtitles / scoring
-              transcription: { model: "whisper-1" },
+              // NOTE: Whisper-1 input transcription intentionally disabled.
+              // We no longer need on-screen subtitles or live scoring in Voice Coach
+              // (live scores are kept for the Pronunciation exercise, which is a
+              // different endpoint). Removing it saves ~$0.006/min of audio input.
               turn_detection: {
                 type: "server_vad",
                 silence_duration_ms: 1400,    // wait ~1.4s of silence before MAX replies → natural pacing
@@ -781,75 +706,55 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
 //     spoken answer on CONTENT APPROPRIATENESS + ENGLISH CORRECTNESS +
 //     PHONETIC CLARITY.
 const ECHO_PROMPTS = [
-  // --- Roleplays — Travel / transport
-  { emoji: "🏨", title: "At the hotel, ask reception to book a room for tonight.",                  hint: "Dates, number of guests, breakfast?", tag: "travel" },
-  { emoji: "🛎️", title: "At the hotel, tell reception the Wi-Fi in your room isn't working.",       hint: "Be polite but clear about the problem.", tag: "travel" },
-  { emoji: "🚕", title: "Ask the taxi how much you owe and pay by card.",                          hint: "Ask for a receipt too.", tag: "travel" },
-  { emoji: "🧭", title: "You're lost in a foreign city — ask a stranger for directions to the train station.", hint: "Be polite, confirm the distance.", tag: "travel" },
-  { emoji: "✈️", title: "At airport check-in, ask for a window seat and check one suitcase.",       hint: "Mention your destination.", tag: "travel" },
-  { emoji: "🚆", title: "At the train station, buy a return ticket to London for tomorrow.",        hint: "Ask about the platform and price.", tag: "travel" },
-  { emoji: "🚗", title: "At a car rental counter, rent a small car for three days.",                hint: "Ask about insurance and fuel.", tag: "travel" },
-  { emoji: "🗺️", title: "Ask the tourist office what to visit in one afternoon.",                   hint: "Say what you like — museums, food, parks.", tag: "travel" },
+  // --- SIMPLE — short, beginner-friendly questions (majority)
+  { emoji: "🎨", title: "What is your favourite colour?",                       hint: "Say why in one sentence.",        tag: "simple" },
+  { emoji: "🍎", title: "What is your favourite food?",                         hint: "Say when you eat it.",            tag: "simple" },
+  { emoji: "🐶", title: "Do you prefer cats or dogs?",                          hint: "Say one reason.",                 tag: "simple" },
+  { emoji: "☀️", title: "Do you prefer summer or winter?",                      hint: "Say one thing you like about it.", tag: "simple" },
+  { emoji: "🎵", title: "What music do you like?",                              hint: "Name one singer or band.",        tag: "simple" },
+  { emoji: "⚽", title: "What sport do you like?",                              hint: "Say if you play it.",             tag: "simple" },
+  { emoji: "📺", title: "What is your favourite movie?",                        hint: "Say if it is funny or sad.",      tag: "simple" },
+  { emoji: "🏠", title: "Describe your bedroom in a few words.",                hint: "Colour, size, one object.",       tag: "simple" },
+  { emoji: "🕐", title: "What do you do in the morning?",                       hint: "Three simple things.",            tag: "simple" },
+  { emoji: "🌆", title: "What is your favourite place in your city?",           hint: "Say why you like it.",            tag: "simple" },
+  { emoji: "🚗", title: "How do you go to work or school?",                     hint: "Car, bus, bike, walk?",           tag: "simple" },
+  { emoji: "🎮", title: "What do you do to relax?",                             hint: "One or two things.",              tag: "simple" },
+  { emoji: "📅", title: "What did you do yesterday?",                           hint: "Two or three short sentences.",   tag: "simple" },
+  { emoji: "🍳", title: "What do you eat for breakfast?",                       hint: "List two or three things.",       tag: "simple" },
+  { emoji: "👨‍👩‍👧", title: "Tell me about your family.",                            hint: "Who, how many, names.",           tag: "simple" },
+  { emoji: "🌧️", title: "How is the weather today?",                            hint: "Sun, rain, cold, hot?",           tag: "simple" },
+  { emoji: "🎂", title: "When is your birthday?",                               hint: "Say the month and day.",          tag: "simple" },
+  { emoji: "🐾", title: "Do you have a pet?",                                   hint: "If yes, describe it.",            tag: "simple" },
+  { emoji: "🍕", title: "What food do you NOT like?",                           hint: "Say why.",                        tag: "simple" },
+  { emoji: "📚", title: "Do you like reading books?",                           hint: "Say what kind.",                  tag: "simple" },
+  { emoji: "🏖️", title: "Describe your perfect weekend.",                       hint: "Two or three activities.",        tag: "simple" },
+  { emoji: "🎁", title: "What is the best gift you received?",                  hint: "Who gave it to you?",             tag: "simple" },
+  { emoji: "🎤", title: "What is your name and where are you from?",            hint: "Introduce yourself simply.",      tag: "simple" },
+  { emoji: "🧭", title: "Where do you live?",                                   hint: "City, country, house or flat?",   tag: "simple" },
+  { emoji: "🚶", title: "How old are you?",                                     hint: "Say when you were born.",         tag: "simple" },
 
-  // --- Roleplays — Food / restaurants
-  { emoji: "🍽️", title: "At the restaurant, ask the waiter for the bill and leave a tip.",          hint: "Thank them for the meal.", tag: "food" },
-  { emoji: "📋", title: "Order a main course and a drink at a restaurant.",                        hint: "Ask what the waiter recommends.", tag: "food" },
-  { emoji: "🥗", title: "Tell the waiter you have a food allergy and ask what's safe.",             hint: "Be clear about what you can't eat.", tag: "food" },
-  { emoji: "☕", title: "Order a coffee and a croissant at a café — to go.",                         hint: "Pay and ask where the toilet is.", tag: "food" },
-  { emoji: "🍕", title: "Call a pizzeria to order delivery for two people.",                        hint: "Give your address and phone number.", tag: "food" },
-  { emoji: "🍷", title: "Ask the waiter to recommend a good wine with your dish.",                  hint: "Mention what you're eating.", tag: "food" },
-  { emoji: "🧾", title: "At the restaurant, politely say there's a mistake on the bill.",           hint: "Stay friendly, explain clearly.", tag: "food" },
+  // --- SIMPLE roleplays — everyday, short, realistic
+  { emoji: "☕", title: "Order a coffee at a café.",                             hint: "Say size and pay.",               tag: "simple-roleplay" },
+  { emoji: "🧀", title: "Ask for bread and cheese at a shop.",                  hint: "Say thank you at the end.",       tag: "simple-roleplay" },
+  { emoji: "🛒", title: "Ask where the milk is in a supermarket.",              hint: "Be polite.",                      tag: "simple-roleplay" },
+  { emoji: "🚕", title: "Ask a taxi driver to go to the airport.",              hint: "Ask the price too.",              tag: "simple-roleplay" },
+  { emoji: "🏨", title: "At the hotel, ask for the Wi-Fi password.",            hint: "Be polite.",                      tag: "simple-roleplay" },
+  { emoji: "🍽️", title: "Ask for the bill at a restaurant.",                    hint: "Thank the waiter.",               tag: "simple-roleplay" },
+  { emoji: "👋", title: "Say hello and introduce yourself to a new classmate.", hint: "Ask their name too.",             tag: "simple-roleplay" },
+  { emoji: "📞", title: "Call a friend to say hello.",                          hint: "Ask how they are.",               tag: "simple-roleplay" },
+  { emoji: "🦷", title: "Tell a doctor you have a small pain.",                 hint: "Say where it hurts.",             tag: "simple-roleplay" },
+  { emoji: "💊", title: "At the pharmacy, ask for something for a cold.",       hint: "Keep it short.",                  tag: "simple-roleplay" },
+  { emoji: "🧭", title: "Ask a stranger where the bus stop is.",                hint: "Be polite and say thank you.",    tag: "simple-roleplay" },
+  { emoji: "📮", title: "Send a postcard at the post office.",                  hint: "Ask the price.",                  tag: "simple-roleplay" },
+  { emoji: "🛍️", title: "Ask the seller how much a shirt costs.",               hint: "Say if you want it or not.",      tag: "simple-roleplay" },
 
-  // --- Roleplays — Shopping
-  { emoji: "🛍️", title: "In a clothing shop, ask if they have this shirt in a smaller size.",       hint: "Ask about price and return policy.", tag: "shopping" },
-  { emoji: "👟", title: "Try on a pair of shoes and tell the seller they're too tight.",            hint: "Ask for another size.", tag: "shopping" },
-  { emoji: "💳", title: "Your card was refused at the checkout — ask the cashier what to do.",      hint: "Stay calm, propose a solution.", tag: "shopping" },
-  { emoji: "📦", title: "Return an item that doesn't fit and ask for a refund.",                    hint: "Explain politely, bring the receipt.", tag: "shopping" },
-  { emoji: "🎁", title: "Ask the seller to gift-wrap something you just bought.",                   hint: "Say who it's for.", tag: "shopping" },
-  { emoji: "🛒", title: "Ask a supermarket employee where the dairy section is.",                   hint: "Say thank you.", tag: "shopping" },
-
-  // --- Roleplays — Health / everyday services
-  { emoji: "🏥", title: "Call to book a doctor's appointment for this week.",                        hint: "Describe the problem in one sentence.", tag: "health" },
-  { emoji: "💊", title: "At the pharmacy, ask for something against a headache.",                   hint: "Say how long it has lasted.", tag: "health" },
-  { emoji: "🦷", title: "Tell the dentist you have a toothache on the right side.",                  hint: "Say when it started.", tag: "health" },
-  { emoji: "🚑", title: "Tell an emergency operator your friend fell and can't get up.",            hint: "Give the address clearly.", tag: "health" },
-  { emoji: "💇", title: "At the hairdresser, explain how you want your hair cut.",                   hint: "Length, style, anything to keep.", tag: "daily" },
-  { emoji: "🔧", title: "Call a plumber — the kitchen sink is leaking.",                             hint: "Say when you're free.", tag: "daily" },
-  { emoji: "📮", title: "At the post office, send a package to another country.",                    hint: "Ask about price and delivery time.", tag: "daily" },
-  { emoji: "🏦", title: "At the bank, ask how to open a new account.",                               hint: "Ask what documents you need.", tag: "daily" },
-
-  // --- Roleplays — Work / social
-  { emoji: "💼", title: "Introduce yourself to a new colleague on your first day.",                  hint: "Your name, your role, something friendly.", tag: "work" },
-  { emoji: "📞", title: "Call your boss to say you're sick and won't come in today.",                hint: "Be polite and brief.", tag: "work" },
-  { emoji: "🗓️", title: "Reschedule a meeting with a client for next week.",                         hint: "Propose two possible times.", tag: "work" },
-  { emoji: "🎤", title: "Open a short meeting by welcoming three new people.",                       hint: "Warm, professional, under 30 seconds.", tag: "work" },
-  { emoji: "🤝", title: "You meet a friend of a friend at a party — introduce yourself.",            hint: "Ask them a question too.", tag: "social" },
-  { emoji: "📧", title: "Politely refuse an invitation to dinner this Saturday.",                    hint: "Give a reason, propose another day.", tag: "social" },
-  { emoji: "🎂", title: "Wish a colleague a happy birthday in front of the team.",                   hint: "Short, warm, a little funny.", tag: "social" },
-
-  // --- Simple opinion questions
-  { emoji: "🎨", title: "What's your favourite colour, and why?",                                    hint: "Give one clear reason.", tag: "opinion" },
-  { emoji: "🍎", title: "What's your favourite food, and when do you usually eat it?",               hint: "Describe the taste.", tag: "opinion" },
-  { emoji: "📺", title: "What's the last movie you watched? Did you like it?",                       hint: "One sentence about the story.", tag: "opinion" },
-  { emoji: "🎵", title: "What kind of music do you listen to when you work?",                         hint: "Name one artist.", tag: "opinion" },
-  { emoji: "🏖️", title: "Describe your perfect weekend.",                                            hint: "Where, with who, what you do.", tag: "opinion" },
-  { emoji: "🌆", title: "What's your favourite place in your city, and why?",                         hint: "Describe the atmosphere.", tag: "opinion" },
-  { emoji: "📚", title: "What's a book or a story that you really love?",                             hint: "One sentence about it.", tag: "opinion" },
-  { emoji: "⚽", title: "Do you play a sport? Tell me about the last time you played.",               hint: "Where, with who, how it went.", tag: "opinion" },
-  { emoji: "🐶", title: "Do you prefer cats or dogs, and why?",                                       hint: "Give two reasons.", tag: "opinion" },
-  { emoji: "☀️", title: "Do you prefer summer or winter? Why?",                                      hint: "Talk about the weather and activities.", tag: "opinion" },
-  { emoji: "🚗", title: "How do you usually go to work or school?",                                   hint: "Time, transport, routine.", tag: "opinion" },
-  { emoji: "🌍", title: "If you could visit any country tomorrow, where would you go?",               hint: "Say what you'd do there.", tag: "opinion" },
-  { emoji: "🕐", title: "Describe what you usually do on a normal Monday.",                           hint: "Morning to evening, briefly.", tag: "opinion" },
-  { emoji: "🎮", title: "What do you do to relax after a long day?",                                  hint: "One or two activities.", tag: "opinion" },
-  { emoji: "👨‍👩‍👧", title: "Tell me about someone important in your family.",                              hint: "Their name, why they matter.", tag: "opinion" },
-
-  // --- Everyday practical
-  { emoji: "🧭", title: "Explain how to get from your home to the nearest supermarket.",              hint: "Step by step.", tag: "daily" },
-  { emoji: "📅", title: "Describe what you did yesterday.",                                          hint: "Past tense. Three or four sentences.", tag: "daily" },
-  { emoji: "🎯", title: "Describe something you want to do next month.",                              hint: "Be specific. Why?", tag: "daily" },
-  { emoji: "🌧️", title: "The weather was bad today. Describe what happened.",                        hint: "Use simple past.", tag: "daily" },
-  { emoji: "🍳", title: "Explain to a friend how to make your favourite breakfast.",                  hint: "Short steps. 30 seconds.", tag: "daily" }
+  // --- A FEW harder situational prompts (kept short but more detailed)
+  { emoji: "🏨", title: "At the hotel, book a room for two nights with breakfast.", hint: "Dates, number of guests.",           tag: "advanced-roleplay" },
+  { emoji: "✈️", title: "At airport check-in, ask for a window seat.",               hint: "Say your destination.",              tag: "advanced-roleplay" },
+  { emoji: "🚆", title: "Buy a return train ticket for tomorrow.",                   hint: "Ask about the price and platform.", tag: "advanced-roleplay" },
+  { emoji: "💼", title: "Introduce yourself to a new colleague at work.",             hint: "Name, role, something friendly.",   tag: "advanced-roleplay" },
+  { emoji: "🎯", title: "Describe a goal you want to achieve this year.",              hint: "Why is it important to you?",      tag: "advanced-opinion" },
+  { emoji: "🌍", title: "If you could visit any country, where would you go and why?", hint: "Two reasons.",                     tag: "advanced-opinion" }
 ];
 
 app.post("/echo/prompt", (req, res) => {
