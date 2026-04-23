@@ -291,12 +291,19 @@ const SCENARIOS = {
   phone:   `You are MAX — a warm English receptionist. Calls feel real, paced naturally, professional.`,
 };
  
-const BASE_INSTRUCTIONS = (scenarioPrompt, nativeLang) => `
+// Core MAX persona + rules. Shared by BOTH the Realtime token endpoint and
+// the push-to-talk /voice-coach/turn endpoint.  NOTE: the "OPENING LINE"
+// directive used to live here, but the iOS push-to-talk client plays the
+// greeting locally (see `greeting` in VoiceCoach🎙️.swift) — so if we leave
+// that directive in the system prompt, the server keeps replaying the same
+// "Hello! How are you today?" greeting every single turn and the
+// conversation never progresses. It's now only injected in the Realtime
+// variant (see `BASE_INSTRUCTIONS` below), where the server genuinely owns
+// MAX's first utterance.
+const MAX_CORE_INSTRUCTIONS = (scenarioPrompt, nativeLang) => `
 ${scenarioPrompt}
  
 IDENTITY: You are MAX, a native English speaker. Warm, calm, demanding friend — not a cheerleader, not a textbook. Native language support: ${nativeLang}.
- 
-OPENING LINE (mandatory first sentence, exact): "Hello! How are you today? What can I do for you?" Then stop. Wait for the user.
  
 RULES:
 - Replies SHORT: 1 sentence preferred, 2 max. Never 3.
@@ -327,6 +334,37 @@ PROGRESSIVE CHALLENGE: After a few turns, gently raise the bar (richer vocab, on
 BILINGUAL: Default English. Switch to ${nativeLang} only briefly (ONE sentence) for real need: translation, stuck user, explicit grammar question. Always return to English.
  
 GOAL: Make the user sound less like a tourist and more like a native. Warm, demanding, real. Never lecture. Never cheer.
+`;
+ 
+// Realtime-session variant: MAX himself opens the call, so keep the
+// mandatory first-line directive here. This is ONLY used by the
+// /voice-coach/token (gpt-realtime) path, never by the push-to-talk path.
+const BASE_INSTRUCTIONS = (scenarioPrompt, nativeLang) =>
+  MAX_CORE_INSTRUCTIONS(scenarioPrompt, nativeLang) + `
+ 
+OPENING LINE (mandatory first sentence, exact): "Hello! How are you today? What can I do for you?" Then stop. Wait for the user.
+`;
+ 
+// Push-to-talk variant: the iOS client has ALREADY played the greeting
+// locally before any turn hits the server, so every /voice-coach/turn
+// call is by definition mid-conversation. We explicitly forbid greeting
+// again and force the model to react to what the user just said — this
+// is the fix for the "loop on the opening line" bug where MAX kept
+// repeating "Hello! How are you today?" on every single turn.
+const PTT_SYSTEM_PROMPT = (scenarioPrompt, nativeLang) =>
+  MAX_CORE_INSTRUCTIONS(scenarioPrompt, nativeLang) + `
+ 
+TURN CONTEXT (very important):
+- You are mid-conversation. The user has ALREADY heard your opening greeting ("Hello! How are you today? What can I do for you?") before this turn started.
+- Do NOT greet the user again. Do NOT start with "Hello", "Hi", "Hey there", or any variant of "How are you today?" unless the user explicitly asks how you are.
+- Do NOT repeat yourself. Do NOT recycle your previous turns verbatim.
+- Respond directly and specifically to what the user just said. Pick up the topic they raised and move the conversation forward with ONE concrete follow-up.
+- If the user's message is very short ("hi", "hello", "yeah"), still do NOT greet — acknowledge briefly and ask a concrete follow-up question tied to the scenario.
+ 
+OUTPUT FORMAT (very strict for this channel):
+- Reply with ONE line of plain text — no markdown, no stage directions, no emojis.
+- 1 sentence preferred, 2 max. Never 3. Keep it under ~30 words.
+- Do NOT prefix with "MAX:" or any speaker label.
 `;
  
 app.get("/voice-coach/token", async (req, res) => {
@@ -424,13 +462,27 @@ app.post("/voice-coach/turn", upload.single("audio"), async (req, res) => {
     const scenarioPrompt = SCENARIOS[scenarioId] || SCENARIOS["free"];
  
     // --- Parse optional conversation history ---------------------------
+    // Accept either a raw array `[{role,text},…]` OR an object wrapper
+    // `{"turns":[{role,text},…]}` (the iOS client sends the wrapped form,
+    // which used to silently fall through to "no history" and was the
+    // reason MAX was replaying his opening line on every single turn —
+    // without history, the model had no signal that the greeting had
+    // already been spoken).
     let history = [];
     try {
       const raw = req.body.history_json;
       if (raw && typeof raw === "string") {
         const parsed = JSON.parse(raw);
+        let arr = null;
         if (Array.isArray(parsed)) {
-          history = parsed
+          arr = parsed;
+        } else if (parsed && typeof parsed === "object") {
+          if (Array.isArray(parsed.turns))        arr = parsed.turns;
+          else if (Array.isArray(parsed.history)) arr = parsed.history;
+          else if (Array.isArray(parsed.messages))arr = parsed.messages;
+        }
+        if (Array.isArray(arr)) {
+          history = arr
             .filter(t => t && typeof t === "object" && typeof t.text === "string")
             .map(t => ({
               role: t.role === "ai" ? "assistant" : "user",
@@ -486,16 +538,29 @@ app.post("/voice-coach/turn", upload.single("audio"), async (req, res) => {
  
     // ===============================
     // 2. LLM REPLY (GPT-4o-mini with MAX persona)
+    //
+    // Use PTT_SYSTEM_PROMPT (no "OPENING LINE" directive, explicit
+    // "don't greet again, respond to the user") instead of the Realtime
+    // BASE_INSTRUCTIONS — otherwise MAX keeps replaying his greeting on
+    // every turn and the conversation never progresses.
     // ===============================
-    const systemPrompt = BASE_INSTRUCTIONS(scenarioPrompt, nativeLang) + `
+    const systemPrompt = PTT_SYSTEM_PROMPT(scenarioPrompt, nativeLang);
  
-OUTPUT FORMAT (very strict for this channel):
-- Reply with ONE line of plain text — no markdown, no stage directions, no emojis.
-- 1 sentence preferred, 2 max. Never 3. Keep it under ~30 words.
-- Do NOT prefix with "MAX:" or any speaker label.
-`;
+    // Seed the conversation with the opening line that the iOS client
+    // already played locally. Giving the model an explicit assistant
+    // turn for the greeting makes it unmistakable that this has ALREADY
+    // happened, so the next assistant turn must advance, not restart.
+    const GREETING_OPENER = "Hello! How are you today? What can I do for you?";
+    const seenGreeting = history.some(
+      h => h.role === "assistant" &&
+           typeof h.content === "string" &&
+           h.content.trim().toLowerCase().startsWith("hello! how are you today")
+    );
  
     const messages = [{ role: "system", content: systemPrompt }];
+    if (!seenGreeting) {
+      messages.push({ role: "assistant", content: GREETING_OPENER });
+    }
     for (const h of history) messages.push(h);
     messages.push({ role: "user", content: userTranscript });
  
