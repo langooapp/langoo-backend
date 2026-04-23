@@ -390,6 +390,209 @@ app.get("/voice-coach/token", async (req, res) => {
 });
  
 // ===============================
+// VOICE COACH — PUSH-TO-TALK PIPELINE (new, ~200× cheaper than Realtime)
+// -------------------------------------------------------------------
+// multipart/form-data:
+//   audio          : file (m4a/aac/mp3/wav) — user's spoken turn
+//   scenario       : "free" | "cafe" | "airport" | "job" | "street" | "phone"
+//   native_language: "fr" | "es" | ... (ISO code)
+//   history_json   : JSON string, array of { role: "user"|"ai", text: "..." } (last N turns)
+//
+// Pipeline:
+//   1. Whisper (gpt-4o-mini-transcribe) → user_transcript
+//   2. GPT-4o-mini with MAX persona + history → ai_reply (short, 1–2 sentences)
+//   3. gpt-4o-mini-tts (voice: "shimmer") → mp3 audio → base64
+//
+// Response JSON:
+//   { user_transcript, ai_reply, ai_audio_base64, ai_audio_format: "mp3" }
+//
+// Cost per turn (indicative):
+//   Whisper  ~10s audio  → ~$0.001
+//   LLM      ~200 tokens → ~$0.00015
+//   TTS      ~150 chars  → ~$0.0001
+//   TOTAL                 → ~$0.0012 / turn  (≈ 200× cheaper than Realtime minute)
+// ===============================
+app.post("/voice-coach/turn", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
+      return res.status(400).json({ error: "Missing audio" });
+    }
+ 
+    const scenarioId     = (req.body.scenario || "free").toString();
+    const nativeLangCode = (req.body.native_language || "fr").toString();
+    const nativeLang     = getLanguageName(nativeLangCode);
+    const scenarioPrompt = SCENARIOS[scenarioId] || SCENARIOS["free"];
+ 
+    // --- Parse optional conversation history ---------------------------
+    let history = [];
+    try {
+      const raw = req.body.history_json;
+      if (raw && typeof raw === "string") {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          history = parsed
+            .filter(t => t && typeof t === "object" && typeof t.text === "string")
+            .map(t => ({
+              role: t.role === "ai" ? "assistant" : "user",
+              content: String(t.text).slice(0, 800)
+            }))
+            .slice(-16); // hard cap
+        }
+      }
+    } catch (_) { history = []; }
+ 
+    // ===============================
+    // 1. TRANSCRIBE (gpt-4o-mini-transcribe — Whisper-family, cheaper than whisper-1)
+    // Uses Node 18+ built-in FormData + Blob — no external deps needed.
+    // ===============================
+    const sttForm = new FormData();
+    const audioBlob = new Blob([req.file.buffer], {
+      type: req.file.mimetype || "audio/m4a"
+    });
+    const fname = (req.file.originalname && req.file.originalname.trim())
+      ? req.file.originalname
+      : "turn.m4a";
+    sttForm.append("file", audioBlob, fname);
+    sttForm.append("model", "gpt-4o-mini-transcribe");
+    sttForm.append("response_format", "json");
+    // No language hint — we want to catch when the user falls back to
+    // their native language (MAX handles that gracefully).
+ 
+    const sttRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: sttForm
+    });
+ 
+    if (!sttRes.ok) {
+      const errText = await sttRes.text().catch(() => "");
+      console.error("voice-coach/turn STT upstream error:", sttRes.status, errText);
+      return res.status(502).json({ error: "stt upstream error" });
+    }
+ 
+    const sttData = await sttRes.json();
+    const userTranscript = (sttData?.text || "").trim();
+    if (!userTranscript) {
+      // Silent / unintelligible audio — still answer kindly.
+      const softReply = "Sorry, I didn't catch that — could you say it again?";
+      const audioB64 = await ttsBase64(softReply, "shimmer");
+      return res.json({
+        user_transcript: "",
+        ai_reply:        softReply,
+        ai_audio_base64: audioB64 || "",
+        ai_audio_format: "mp3"
+      });
+    }
+ 
+    // ===============================
+    // 2. LLM REPLY (GPT-4o-mini with MAX persona)
+    // ===============================
+    const systemPrompt = BASE_INSTRUCTIONS(scenarioPrompt, nativeLang) + `
+ 
+OUTPUT FORMAT (very strict for this channel):
+- Reply with ONE line of plain text — no markdown, no stage directions, no emojis.
+- 1 sentence preferred, 2 max. Never 3. Keep it under ~30 words.
+- Do NOT prefix with "MAX:" or any speaker label.
+`;
+ 
+    const messages = [{ role: "system", content: systemPrompt }];
+    for (const h of history) messages.push(h);
+    messages.push({ role: "user", content: userTranscript });
+ 
+    const llmRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0.7,
+        max_tokens: 160,
+        messages
+      })
+    });
+ 
+    if (!llmRes.ok) {
+      const errText = await llmRes.text().catch(() => "");
+      console.error("voice-coach/turn LLM upstream error:", llmRes.status, errText);
+      return res.status(502).json({ error: "llm upstream error" });
+    }
+ 
+    const llmData = await llmRes.json();
+    let aiReply = (llmData?.choices?.[0]?.message?.content || "").trim();
+    // Clean up common artifacts.
+    aiReply = aiReply.replace(/^["'`]+|["'`]+$/g, "");
+    aiReply = aiReply.replace(/^MAX\s*:\s*/i, "");
+    if (!aiReply) {
+      aiReply = "Mm — tell me a bit more about that?";
+    }
+ 
+    // ===============================
+    // 3. TTS (gpt-4o-mini-tts, voice: shimmer)
+    // ===============================
+    const audioB64 = await ttsBase64(aiReply, "shimmer");
+    if (!audioB64) {
+      return res.status(502).json({ error: "tts upstream error" });
+    }
+ 
+    res.json({
+      user_transcript: userTranscript,
+      ai_reply:        aiReply,
+      ai_audio_base64: audioB64,
+      ai_audio_format: "mp3"
+    });
+  } catch (error) {
+    console.error("voice-coach/turn error:", error);
+    res.status(500).json({ error: "voice coach turn error" });
+  }
+});
+ 
+// Helper — synthesize speech with gpt-4o-mini-tts and return base64 MP3.
+async function ttsBase64(text, voice = "shimmer") {
+  try {
+    const allowed = new Set([
+      "nova", "shimmer", "alloy", "sage", "verse", "coral", "ash", "ballad", "echo", "fable", "onyx", "marin", "cedar"
+    ]);
+    const voiceSafe = allowed.has(voice) ? voice : "shimmer";
+ 
+    const instructions =
+`Voice: warm, native English friend on a phone call. Calm, grounded, human.
+Pacing: natural, unhurried, with small real breaths between clauses.
+Intonation: friendly rise and fall, understated emotion, never theatrical.
+Tone: encouraging, patient, real — like talking to a friend, not a teacher.
+Neutral American English. Crisp but unforced articulation.`;
+ 
+    const upstream = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini-tts",
+        voice: voiceSafe,
+        input: text,
+        instructions,
+        format: "mp3"
+      })
+    });
+ 
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "");
+      console.error("voice-coach tts upstream error:", upstream.status, errText);
+      return null;
+    }
+ 
+    const arrayBuf = await upstream.arrayBuffer();
+    return Buffer.from(arrayBuf).toString("base64");
+  } catch (e) {
+    console.error("voice-coach ttsBase64 error:", e);
+    return null;
+  }
+}
+ 
+// ===============================
 // NATIVE MODE — "Can you fool a native?"
 // Phonetic challenge exercise (replaces Real Talk).
 // ===============================
