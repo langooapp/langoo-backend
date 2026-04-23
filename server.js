@@ -361,9 +361,19 @@ TURN CONTEXT (very important):
 - Respond directly and specifically to what the user just said. Pick up the topic they raised and move the conversation forward with ONE concrete follow-up.
 - If the user's message is very short ("hi", "hello", "yeah"), still do NOT greet — acknowledge briefly and ask a concrete follow-up question tied to the scenario.
  
+TRANSLATION & COMPREHENSION REQUESTS (very important):
+When the user says any variant of "I don't understand", "what does that mean", "translate that", "qu'est-ce que ça veut dire", "je n'ai pas compris", "dis-moi en ${nativeLang}", "how do you say X", etc. — do ALL THREE things in a single reply, in this order:
+  1. Give a natural, short translation in ${nativeLang} of the English phrase they asked about (the most recent English phrase YOU just said, unless they explicitly point at a different one).
+  2. REPEAT the original English phrase in quotes right after the translation, so they hear it again and can anchor the new vocabulary to the sound.
+  3. Immediately push the conversation forward with ONE concrete, simple follow-up QUESTION in English — tied to the topic of the phrase. Never just stop after translating. Never wait in silence.
+Example (user's native = French):
+  User: "What does 'what have you been up to lately' mean?"
+  You:  "Ça veut dire « qu'est-ce que tu as fait récemment ? » — 'what have you been up to lately?'. So — what have you been up to this week?"
+If the user still struggles after the translation (e.g. says "I don't know how to answer" in ${nativeLang}), give them ONE short scaffold: a word or phrase they could start their answer with, then ask the question again. Never let the user be stranded in silence — always leave them with something concrete to say next.
+ 
 OUTPUT FORMAT (very strict for this channel):
-- Reply with ONE line of plain text — no markdown, no stage directions, no emojis.
-- 1 sentence preferred, 2 max. Never 3. Keep it under ~30 words.
+- Reply with ONE flowing line of plain text — no markdown, no stage directions, no emojis, no bullet points.
+- 1–2 sentences max in normal turns. Translation turns may go up to 3 short clauses (translation + quoted English + follow-up question), still under ~40 words total.
 - Do NOT prefix with "MAX:" or any speaker label.
 `;
  
@@ -527,7 +537,11 @@ app.post("/voice-coach/turn", upload.single("audio"), async (req, res) => {
     if (!userTranscript) {
       // Silent / unintelligible audio — still answer kindly.
       const softReply = "Sorry, I didn't catch that — could you say it again?";
-      const audioB64 = await ttsBase64(softReply, "shimmer");
+      // v17 — "ash" = warmer, more natural male voice on gpt-4o-mini-tts.
+      // Same price tier as shimmer/alloy (all 11 voices are billed identically
+      // on the same model), so this is a pure UX upgrade at zero cost delta.
+      // Male voice also matches MAX's persona better than the softer shimmer.
+      const audioB64 = await ttsBase64(softReply, "ash");
       return res.json({
         user_transcript: "",
         ai_reply:        softReply,
@@ -594,9 +608,14 @@ app.post("/voice-coach/turn", upload.single("audio"), async (req, res) => {
     }
  
     // ===============================
-    // 3. TTS (gpt-4o-mini-tts, voice: shimmer)
+    // 3. TTS (gpt-4o-mini-tts, voice: ash)
+    //
+    // "ash" is the warmest, most natural-sounding voice in the gpt-4o-mini-tts
+    // lineup as of April 2026 — same billing as shimmer (voices don't affect
+    // price on this model) but noticeably more human and better matched to
+    // MAX's male coach persona. No cost impact for the switch.
     // ===============================
-    const audioB64 = await ttsBase64(aiReply, "shimmer");
+    const audioB64 = await ttsBase64(aiReply, "ash");
     if (!audioB64) {
       return res.status(502).json({ error: "tts upstream error" });
     }
