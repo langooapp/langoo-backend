@@ -1462,6 +1462,178 @@ Rules:
 });
  
 // ===============================
+// BASELINE BENCHMARK — AVANT / APRÈS (v17.7.3)
+//
+// The retention hero. Once a month, the user re-records THE SAME three
+// reference phrases. Their score is displayed as a crude, honest
+// percentage so they can watch themselves improve month after month.
+//
+// Because this only runs THREE phrases once a month, we can afford the
+// very best phonetic model OpenAI ships: gpt-4o-audio-preview — a multi-
+// modal chat model that ingests raw audio and performs real phonetic
+// assessment (not just a transcript-vs-target edit distance). This is
+// dramatically more accurate than the Apple Speech + GPT-4o-mini rubric
+// used by the regular Pronunciation exercise, and its cost is negligible
+// at this volume (~3 calls / user / month).
+//
+// Input (multipart/form-data):
+//   - audio:           the user's recording (m4a / mp3 / wav)
+//   - target:          the exact target phrase in English
+//   - native_language: ISO code for feedback localization (defaults "fr")
+//
+// Output (strict JSON):
+//   { score: 0..100, grade: "tourist" | "learner" | "speaker" | "native",
+//     feedback_native: "...", feedback_english: "..." }
+//
+// Rules for the model (see system prompt):
+//   - Score phonetic accuracy, NOT content. The user MUST say the
+//     target phrase — if they don't, the score must be low.
+//   - Be HONEST. A first-session user should clearly see room to grow.
+//     Never inflate scores to be kind.
+//   - Punctuation is not spoken. Ignore it.
+//   - Feedback must be ONE short actionable sentence on a specific
+//     phonetic issue (a vowel, a consonant, a stress pattern, linking).
+// ===============================
+app.post("/pronunciation/benchmark-score", upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer || req.file.buffer.length === 0) {
+      return res.status(400).json({ error: "Missing audio" });
+    }
+ 
+    const target         = (req.body.target || "").toString().trim();
+    const nativeLangCode = (req.body.native_language || "fr").toString();
+    const nativeLang     = getLanguageName(nativeLangCode);
+ 
+    if (!target) {
+      return res.status(400).json({ error: "Missing target" });
+    }
+ 
+    // Safety cap — benchmark clips are short (<15 s of speech).
+    // Larger uploads are almost certainly accidental or abusive.
+    if (req.file.buffer.length > 3_000_000) {
+      return res.status(400).json({ error: "Audio too large" });
+    }
+ 
+    // gpt-4o-audio-preview accepts base64-encoded audio. Accepted formats:
+    // "mp3" or "wav". iOS records AAC/M4A — the upstream model accepts
+    // "mp3" as the format hint and decodes most common containers fine,
+    // but to maximize compatibility we also accept explicit hints via
+    // body.audio_format.
+    const hint = (req.body.audio_format || "").toString().toLowerCase();
+    let fmt = "mp3";
+    if (hint === "wav" || hint === "mp3") {
+      fmt = hint;
+    } else {
+      const mime = (req.file.mimetype || "").toLowerCase();
+      if (mime.includes("wav")) fmt = "wav";
+      else fmt = "mp3";
+    }
+ 
+    const audioB64 = req.file.buffer.toString("base64");
+ 
+    const system =
+`You are the most demanding phonetic pronunciation judge for an English-learning app called Langoo.
+ 
+Your job: listen to the user's audio and score how NATIVE they sounded when repeating a TARGET English phrase.
+ 
+You have real audio — NOT just a transcript — so you can judge:
+- Individual phonemes (th, r, l, schwa, vowel length, final consonants).
+- Word stress and sentence stress.
+- Linking, reductions, and rhythm.
+- Clarity, hesitation, and pacing.
+ 
+STRICT RULES
+1. Punctuation is NEVER spoken. Ignore all commas, periods, apostrophes, hyphens, question marks, quotes.
+2. Casing and accents are irrelevant.
+3. Contractions are equivalent to their expanded form ("I am" == "I'm").
+4. If the user said something completely different from the target, score ≤ 20.
+5. If the user said the target but with heavy L1 interference (French, Spanish, etc.) → learner (40-64).
+6. If the user said the target with an understandable but non-native accent → speaker (65-84).
+7. If the user sounds genuinely native or near-native → native (85-100).
+8. Be HONEST. A first-time user typically scores 55-75. Do not inflate to be nice — the user needs a crude, accurate baseline so they can watch progress.
+9. 100 is reserved for truly indistinguishable-from-native delivery.
+10. If the audio is silent, garbled, or <0.5 s, score ≤ 10.
+ 
+OUTPUT FORMAT — STRICT JSON ONLY, no markdown fences:
+{
+  "score": integer 0-100,
+  "grade": one of "tourist" | "learner" | "speaker" | "native",
+  "feedback_native": one short sentence (max 20 words) in ${nativeLang}, warm but honest, pointing at ONE concrete phonetic issue (e.g. "ton 'th' sonne comme un 's' — place la langue entre les dents"). Never mention punctuation. Never shame.
+  "feedback_english": one short sentence (same vibe, max 20 words), in English.
+}
+ 
+Feedback style:
+- Name the specific sound, word, or rhythm to fix.
+- Be constructive ("try relaxing the vowel in 'think'") not generic ("good try!").
+- If the score is 85+, praise the specific thing that already sounds native.`;
+ 
+    const userText = `TARGET PHRASE: ${target}\n\nListen to the audio and judge now. Return JSON only.`;
+ 
+    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-audio-preview",
+        modalities: ["text"],
+        temperature: 0.15,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userText },
+              {
+                type: "input_audio",
+                input_audio: { data: audioB64, format: fmt }
+              }
+            ]
+          }
+        ]
+      })
+    });
+ 
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "");
+      console.error("benchmark-score upstream error:", upstream.status, errText);
+      return res.status(502).json({ error: "benchmark upstream error" });
+    }
+ 
+    const data = await upstream.json();
+    const raw  = data?.choices?.[0]?.message?.content || "{}";
+ 
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { parsed = {}; }
+ 
+    let score = parseInt(parsed.score, 10);
+    if (isNaN(score)) score = 0;
+    score = Math.max(0, Math.min(100, score));
+ 
+    const grades = ["tourist", "learner", "speaker", "native"];
+    let grade = grades.includes(parsed.grade) ? parsed.grade : null;
+    if (!grade) {
+      if      (score >= 85) grade = "native";
+      else if (score >= 65) grade = "speaker";
+      else if (score >= 40) grade = "learner";
+      else                  grade = "tourist";
+    }
+ 
+    res.json({
+      score,
+      grade,
+      feedback_native:  parsed.feedback_native  || null,
+      feedback_english: parsed.feedback_english || null
+    });
+  } catch (error) {
+    console.error("benchmark-score error:", error);
+    res.status(500).json({ error: "benchmark score error" });
+  }
+});
+ 
+// ===============================
 // REALTIME WEB PAGE (existing, model aligned)
 // ===============================
 app.get("/realtime-client", (req, res) => {
