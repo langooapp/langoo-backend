@@ -1257,9 +1257,26 @@ Upgrade it now. Return STRICT JSON only.`;
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-4o",
+        // v17.2 — gpt-4o → gpt-4o-mini.
+        //
+        // The /echo/rewrite call is what the UI labels "Peaufinage" and was
+        // the single biggest source of perceived latency between the user
+        // finishing their sentence and seeing their correction (gpt-4o is
+        // ~2.5-3s typical on this workload, gpt-4o-mini is ~0.8-1.2s).
+        //
+        // The task is a constrained rewrite + rubric-scoring + JSON output —
+        // well within gpt-4o-mini's reliable zone. We also already hand the
+        // model a very prescriptive prompt + strict JSON schema + scoring
+        // rubric, so the quality gap vs gpt-4o here is negligible for the
+        // end user and the perceived speed-up is massive. Bonus: ~10x cost
+        // reduction per rewrite, which matters for the monetization plan.
+        //
+        // `max_tokens` bounds the worst-case latency tail (pathological
+        // answers that the model tries to grade forever).
+        model: "gpt-4o-mini",
         temperature: 0.6,
         top_p: 0.95,
+        max_tokens: 700,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: system },
