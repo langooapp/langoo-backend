@@ -1514,45 +1514,104 @@ app.post("/pronunciation/benchmark-score", upload.single("audio"), async (req, r
       return res.status(400).json({ error: "Audio too large" });
     }
  
-    // gpt-4o-audio-preview accepts base64-encoded audio. Accepted formats:
-    // "mp3" or "wav". iOS records AAC/M4A — the upstream model accepts
-    // "mp3" as the format hint and decodes most common containers fine,
-    // but to maximize compatibility we also accept explicit hints via
-    // body.audio_format.
-    const hint = (req.body.audio_format || "").toString().toLowerCase();
-    let fmt = "mp3";
-    if (hint === "wav" || hint === "mp3") {
-      fmt = hint;
-    } else {
-      const mime = (req.file.mimetype || "").toLowerCase();
-      if (mime.includes("wav")) fmt = "wav";
-      else fmt = "mp3";
+    // ===============================================================
+    // v17.7.7 — REPLACED gpt-4o-audio-preview with a Whisper + GPT
+    // chain. The previous implementation forwarded raw iOS M4A audio
+    // to gpt-4o-audio-preview with format="mp3", which caused OpenAI
+    // to fail decoding (the audio model only accepts wav/mp3, not
+    // m4a/aac), returning 502 to iOS — surfaced in the app as
+    // "Connexion impossible". Whisper (gpt-4o-mini-transcribe) accepts
+    // m4a natively, so we transcribe first, then score the transcript
+    // vs the target with gpt-4o-mini using a phonetic-aware rubric.
+    // Same response shape as before — iOS doesn't need any change.
+    // ===============================================================
+ 
+    // ===== STEP 1: TRANSCRIBE via gpt-4o-mini-transcribe (accepts m4a) =====
+    const sttForm = new FormData();
+    const audioBlob = new Blob([req.file.buffer], {
+      type: req.file.mimetype || "audio/m4a"
+    });
+    const fname = (req.file.originalname && req.file.originalname.trim())
+      ? req.file.originalname
+      : "benchmark.m4a";
+    sttForm.append("file", audioBlob, fname);
+    sttForm.append("model", "gpt-4o-mini-transcribe");
+    sttForm.append("response_format", "json");
+    sttForm.append("language", "en");   // benchmark phrases are English
+    sttForm.append("temperature", "0");
+ 
+    const sttRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: sttForm
+    });
+ 
+    if (!sttRes.ok) {
+      const errText = await sttRes.text().catch(() => "");
+      console.error("benchmark-score STT upstream error:", sttRes.status, errText);
+      return res.status(502).json({ error: "benchmark stt error" });
     }
  
-    const audioB64 = req.file.buffer.toString("base64");
+    const sttData = await sttRes.json();
+    const transcript = (sttData?.text || "").trim();
+ 
+    // Silent / garbled audio guard — return a low score so the user
+    // sees actionable feedback instead of "Connexion impossible".
+    if (!transcript || transcript.length < 2) {
+      return res.json({
+        score: 5,
+        grade: "tourist",
+        feedback_native:  "Aucun son audible — réessaye en parlant plus fort, plus près du micro.",
+        feedback_english: "No audio detected — try again, speak louder and closer to the mic."
+      });
+    }
+ 
+    // ===== STEP 2: SCORE via gpt-4o-mini with phonetic-aware rubric =====
+    const stripPunct = (s) => (s || "")
+      .toLowerCase()
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/[\p{P}\p{S}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+ 
+    const cleanTarget     = stripPunct(target);
+    const cleanTranscript = stripPunct(transcript);
+ 
+    // Word-match anchor — share of target words detected in transcript.
+    // Helps the model ground its phonetic estimate in something concrete.
+    const targetWords     = cleanTarget.split(/\s+/).filter(Boolean);
+    const targetWordSet   = new Set(targetWords);
+    const transcriptWords = cleanTranscript.split(/\s+/).filter(Boolean);
+    let matched = 0;
+    for (const w of transcriptWords) if (targetWordSet.has(w)) matched++;
+    const wordMatchPct = targetWords.length > 0
+      ? Math.round((matched / targetWords.length) * 100)
+      : 0;
  
     const system =
 `You are the most demanding phonetic pronunciation judge for an English-learning app called Langoo.
  
-Your job: listen to the user's audio and score how NATIVE they sounded when repeating a TARGET English phrase.
+Your job: score how NATIVE the user sounded when repeating a TARGET English phrase.
+You receive: the TARGET (what they should have said) and the TRANSCRIPT produced by a speech-to-text engine on their actual voice. The transcript is your primary signal — when a French speaker mispronounces "think" it gets transcribed as "sink" or "tink"; when they nail it, it transcribes cleanly.
  
-You have real audio — NOT just a transcript — so you can judge:
-- Individual phonemes (th, r, l, schwa, vowel length, final consonants).
-- Word stress and sentence stress.
-- Linking, reductions, and rhythm.
-- Clarity, hesitation, and pacing.
+Phonetic interpretation rules:
+- Clean transcript closely matching the target → strong native delivery.
+- Substituted letters/words that sound similar (e.g. "tink" instead of "think", "vat" instead of "what", "for relax" instead of "to relax") → typical L1 interference (often French speakers).
+- Dropped words, gibberish, weirdly split words → unclear pronunciation.
+- Empty / single-word transcript on a multi-word target → very weak delivery.
+- WORD_MATCH_PERCENT (provided) is your ground-truth anchor for how clearly each word landed.
  
 STRICT RULES
-1. Punctuation is NEVER spoken. Ignore all commas, periods, apostrophes, hyphens, question marks, quotes.
+1. Punctuation is NEVER spoken. Ignore commas, periods, apostrophes, hyphens, question marks, quotes.
 2. Casing and accents are irrelevant.
 3. Contractions are equivalent to their expanded form ("I am" == "I'm").
-4. If the user said something completely different from the target, score ≤ 20.
-5. If the user said the target but with heavy L1 interference (French, Spanish, etc.) → learner (40-64).
-6. If the user said the target with an understandable but non-native accent → speaker (65-84).
-7. If the user sounds genuinely native or near-native → native (85-100).
-8. Be HONEST. A first-time user typically scores 55-75. Do not inflate to be nice — the user needs a crude, accurate baseline so they can watch progress.
-9. 100 is reserved for truly indistinguishable-from-native delivery.
-10. If the audio is silent, garbled, or <0.5 s, score ≤ 10.
+4. Common homophone STT artifacts (for/four, their/there, to/too, your/you're) are NOT user errors.
+5. User said something completely different from the target → score ≤ 20.
+6. Heavy L1 interference (substitutions on key consonants/vowels) → 40-64 (learner).
+7. Mostly correct words with recognizable accent → 65-84 (speaker).
+8. Near-perfect transcript with high word match → 85-100 (native).
+9. Be HONEST. A first-time user typically scores 55-75. Do not inflate to be nice — the user needs an accurate baseline to watch progress.
+10. 100 is reserved for indistinguishable-from-native delivery.
  
 OUTPUT FORMAT — STRICT JSON ONLY, no markdown fences:
 {
@@ -1565,44 +1624,43 @@ OUTPUT FORMAT — STRICT JSON ONLY, no markdown fences:
 Feedback style:
 - Name the specific sound, word, or rhythm to fix.
 - Be constructive ("try relaxing the vowel in 'think'") not generic ("good try!").
-- If the score is 85+, praise the specific thing that already sounds native.`;
+- If score 85+, praise the specific thing that already sounds native.`;
  
-    const userText = `TARGET PHRASE: ${target}\n\nListen to the audio and judge now. Return JSON only.`;
+    const userMsg =
+`TARGET: ${target}
+TARGET (compare form): ${cleanTarget}
  
-    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+TRANSCRIPT: ${transcript}
+TRANSCRIPT (compare form): ${cleanTranscript}
+ 
+WORD_MATCH_PERCENT: ${wordMatchPct}
+ 
+Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
+ 
+    const llmRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-4o-audio-preview",
-        modalities: ["text"],
-        temperature: 0.15,
+        model: "gpt-4o-mini",
+        temperature: 0.2,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: system },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: userText },
-              {
-                type: "input_audio",
-                input_audio: { data: audioB64, format: fmt }
-              }
-            ]
-          }
+          { role: "user",   content: userMsg }
         ]
       })
     });
  
-    if (!upstream.ok) {
-      const errText = await upstream.text().catch(() => "");
-      console.error("benchmark-score upstream error:", upstream.status, errText);
-      return res.status(502).json({ error: "benchmark upstream error" });
+    if (!llmRes.ok) {
+      const errText = await llmRes.text().catch(() => "");
+      console.error("benchmark-score LLM upstream error:", llmRes.status, errText);
+      return res.status(502).json({ error: "benchmark llm error" });
     }
  
-    const data = await upstream.json();
+    const data = await llmRes.json();
     const raw  = data?.choices?.[0]?.message?.content || "{}";
  
     let parsed;
