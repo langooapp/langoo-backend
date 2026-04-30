@@ -1509,158 +1509,119 @@ app.post("/pronunciation/benchmark-score", upload.single("audio"), async (req, r
     }
  
     // Safety cap — benchmark clips are short (<15 s of speech).
-    // Larger uploads are almost certainly accidental or abusive.
-    if (req.file.buffer.length > 3_000_000) {
+    if (req.file.buffer.length > 5_000_000) {
       return res.status(400).json({ error: "Audio too large" });
     }
  
     // ===============================================================
-    // v17.7.7 — REPLACED gpt-4o-audio-preview with a Whisper + GPT
-    // chain. The previous implementation forwarded raw iOS M4A audio
-    // to gpt-4o-audio-preview with format="mp3", which caused OpenAI
-    // to fail decoding (the audio model only accepts wav/mp3, not
-    // m4a/aac), returning 502 to iOS — surfaced in the app as
-    // "Connexion impossible". Whisper (gpt-4o-mini-transcribe) accepts
-    // m4a natively, so we transcribe first, then score the transcript
-    // vs the target with gpt-4o-mini using a phonetic-aware rubric.
-    // Same response shape as before — iOS doesn't need any change.
+    // v17.7.10 — REVERTED to gpt-4o-audio-preview with REAL phonetic
+    // analysis. The iOS client now records WAV/PCM 16 kHz mono
+    // (BaselineBenchmark.swift v17.7.10), so the audio model can
+    // decode the raw signal and judge phonemes directly. The previous
+    // Whisper+GPT chain was too lenient — Whisper transcribes "I love
+    // my dog" perfectly even with a heavy French accent, so first-time
+    // users were scoring 100/100 and could never see progression.
+    //
+    // The prompt below is BRUTAL on purpose — Emma-grade. A first-time
+    // French speaker should typically score 45-70, never 100. 100 is
+    // reserved for genuine native or near-native delivery.
     // ===============================================================
  
-    // ===== STEP 1: TRANSCRIBE via gpt-4o-mini-transcribe (accepts m4a) =====
-    const sttForm = new FormData();
-    const audioBlob = new Blob([req.file.buffer], {
-      type: req.file.mimetype || "audio/m4a"
-    });
-    const fname = (req.file.originalname && req.file.originalname.trim())
-      ? req.file.originalname
-      : "benchmark.m4a";
-    sttForm.append("file", audioBlob, fname);
-    sttForm.append("model", "gpt-4o-mini-transcribe");
-    sttForm.append("response_format", "json");
-    sttForm.append("language", "en");   // benchmark phrases are English
-    sttForm.append("temperature", "0");
- 
-    const sttRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
-      body: sttForm
-    });
- 
-    if (!sttRes.ok) {
-      const errText = await sttRes.text().catch(() => "");
-      console.error("benchmark-score STT upstream error:", sttRes.status, errText);
-      return res.status(502).json({ error: "benchmark stt error" });
+    const hint = (req.body.audio_format || "").toString().toLowerCase();
+    let fmt = "wav";
+    if (hint === "wav" || hint === "mp3") {
+      fmt = hint;
+    } else {
+      const mime = (req.file.mimetype || "").toLowerCase();
+      if      (mime.includes("wav")) fmt = "wav";
+      else if (mime.includes("mp3") || mime.includes("mpeg")) fmt = "mp3";
+      else                            fmt = "wav";
     }
  
-    const sttData = await sttRes.json();
-    const transcript = (sttData?.text || "").trim();
- 
-    // Silent / garbled audio guard — return a low score so the user
-    // sees actionable feedback instead of "Connexion impossible".
-    if (!transcript || transcript.length < 2) {
-      return res.json({
-        score: 5,
-        grade: "tourist",
-        feedback_native:  "Aucun son audible — réessaye en parlant plus fort, plus près du micro.",
-        feedback_english: "No audio detected — try again, speak louder and closer to the mic."
-      });
-    }
- 
-    // ===== STEP 2: SCORE via gpt-4o-mini with phonetic-aware rubric =====
-    const stripPunct = (s) => (s || "")
-      .toLowerCase()
-      .replace(/[\u2018\u2019]/g, "'")
-      .replace(/[\p{P}\p{S}]+/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
- 
-    const cleanTarget     = stripPunct(target);
-    const cleanTranscript = stripPunct(transcript);
- 
-    // Word-match anchor — share of target words detected in transcript.
-    // Helps the model ground its phonetic estimate in something concrete.
-    const targetWords     = cleanTarget.split(/\s+/).filter(Boolean);
-    const targetWordSet   = new Set(targetWords);
-    const transcriptWords = cleanTranscript.split(/\s+/).filter(Boolean);
-    let matched = 0;
-    for (const w of transcriptWords) if (targetWordSet.has(w)) matched++;
-    const wordMatchPct = targetWords.length > 0
-      ? Math.round((matched / targetWords.length) * 100)
-      : 0;
+    const audioB64 = req.file.buffer.toString("base64");
  
     const system =
-`You are the most demanding phonetic pronunciation judge for an English-learning app called Langoo.
+`You are the strictest phonetic pronunciation judge in the world for an English-learning app called Langoo. Think Cambridge phonetics examiner crossed with the Emma app's brutal accent coach. Your reputation is built on never inflating scores.
  
-Your job: score how NATIVE the user sounded when repeating a TARGET English phrase.
-You receive: the TARGET (what they should have said) and the TRANSCRIPT produced by a speech-to-text engine on their actual voice. The transcript is your primary signal — when a French speaker mispronounces "think" it gets transcribed as "sink" or "tink"; when they nail it, it transcribes cleanly.
+You receive RAW AUDIO (not a transcript). Use it to judge:
+- Individual phonemes: "th" (voiced/unvoiced), schwa, /r/ vs /l/, /v/ vs /w/, vowel length, final consonants.
+- Word stress and sentence stress — French speakers love to flatten English stress patterns.
+- Connected speech: linking, reductions, weak forms.
+- Rhythm, prosody, pacing.
+- Clarity, hesitation, false starts, mumbling.
+- Confidence, fluency, naturalness.
  
-Phonetic interpretation rules:
-- Clean transcript closely matching the target → strong native delivery.
-- Substituted letters/words that sound similar (e.g. "tink" instead of "think", "vat" instead of "what", "for relax" instead of "to relax") → typical L1 interference (often French speakers).
-- Dropped words, gibberish, weirdly split words → unclear pronunciation.
-- Empty / single-word transcript on a multi-word target → very weak delivery.
-- WORD_MATCH_PERCENT (provided) is your ground-truth anchor for how clearly each word landed.
+STRICT SCORING RUBRIC — YOU MUST FOLLOW THIS:
+- 0-15:  silent / garbled / completely wrong phrase / clip < 0.5 s.
+- 16-35: tourist. Says some words but with massive L1 interference. Hard to understand even for a patient native.
+- 36-55: learner-low. Recognisable but heavy French (or other L1) accent. "th" --> "s/z/d", flat stress, dropped final consonants.
+- 56-70: learner-high. Clear words, comprehensible, but accent is obvious. Some phonemes still off.
+- 71-82: speaker. Comfortable rhythm, most phonemes accurate, accent still detectable to natives.
+- 83-92: advanced speaker. Near-native rhythm and phonemes. Trained ear can still hear non-native.
+- 93-100: native or indistinguishable-from-native. RESERVE 100 for objectively perfect delivery.
  
-STRICT RULES
-1. Punctuation is NEVER spoken. Ignore commas, periods, apostrophes, hyphens, question marks, quotes.
-2. Casing and accents are irrelevant.
-3. Contractions are equivalent to their expanded form ("I am" == "I'm").
-4. Common homophone STT artifacts (for/four, their/there, to/too, your/you're) are NOT user errors.
-5. User said something completely different from the target → score ≤ 20.
-6. Heavy L1 interference (substitutions on key consonants/vowels) → 40-64 (learner).
-7. Mostly correct words with recognizable accent → 65-84 (speaker).
-8. Near-perfect transcript with high word match → 85-100 (native).
-9. Be HONEST. A first-time user typically scores 55-75. Do not inflate to be nice — the user needs an accurate baseline to watch progress.
-10. 100 is reserved for indistinguishable-from-native delivery.
+CRITICAL ANTI-INFLATION RULES:
+1. Punctuation is NEVER spoken. Ignore it.
+2. If you can hear ANY non-native accent at all, the score CANNOT exceed 84.
+3. If you can clearly identify the speaker's L1 (French, Spanish, etc.) from one phrase, score CANNOT exceed 75.
+4. If "th" comes out as "s/z/d/t" even once, score drops 8 points minimum.
+5. If final consonants are dropped (typical French), score drops 5 points per occurrence.
+6. If word stress is misplaced (typical French), score drops 5-10 points.
+7. If the speaker said the wrong words / improvised: score <= 20.
+8. A first-time user who reads slowly but with a French accent should land 50-70, NEVER 90+.
+9. The user EXPECTS imperfection at first — they track progression month over month. An honest 60 today and a real 75 in 3 months is the product. A fake 100 today is a useless number.
+10. Be intellectually honest. If you can't tell — pick the LOWER score.
  
 OUTPUT FORMAT — STRICT JSON ONLY, no markdown fences:
 {
   "score": integer 0-100,
   "grade": one of "tourist" | "learner" | "speaker" | "native",
-  "feedback_native": one short sentence (max 20 words) in ${nativeLang}, warm but honest, pointing at ONE concrete phonetic issue (e.g. "ton 'th' sonne comme un 's' — place la langue entre les dents"). Never mention punctuation. Never shame.
-  "feedback_english": one short sentence (same vibe, max 20 words), in English.
+  "feedback_native": one short sentence (max 22 words) in ${nativeLang}, brutally honest but constructive, naming ONE specific phonetic issue heard. Never shame, never praise generically.
+  "feedback_english": same in English (max 22 words).
 }
  
 Feedback style:
-- Name the specific sound, word, or rhythm to fix.
-- Be constructive ("try relaxing the vowel in 'think'") not generic ("good try!").
-- If score 85+, praise the specific thing that already sounds native.`;
+- Name the EXACT phoneme, word, or stress pattern that failed.
+- Tell them EXACTLY how to fix it (mouth shape, tongue position, breath control).
+- If score 85+, praise the SPECIFIC thing that already sounds native.
+- Never say "good try" or "almost there".`;
  
-    const userMsg =
-`TARGET: ${target}
-TARGET (compare form): ${cleanTarget}
+    const userText = `TARGET PHRASE: ${target}\n\nListen to the audio carefully. Apply the strict rubric. Return JSON only.`;
  
-TRANSCRIPT: ${transcript}
-TRANSCRIPT (compare form): ${cleanTranscript}
- 
-WORD_MATCH_PERCENT: ${wordMatchPct}
- 
-Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
- 
-    const llmRes = await fetch("https://api.openai.com/v1/chat/completions", {
+    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
-        temperature: 0.2,
+        model: "gpt-4o-audio-preview",
+        modalities: ["text"],
+        temperature: 0.1,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: system },
-          { role: "user",   content: userMsg }
+          {
+            role: "user",
+            content: [
+              { type: "text", text: userText },
+              {
+                type: "input_audio",
+                input_audio: { data: audioB64, format: fmt }
+              }
+            ]
+          }
         ]
       })
     });
  
-    if (!llmRes.ok) {
-      const errText = await llmRes.text().catch(() => "");
-      console.error("benchmark-score LLM upstream error:", llmRes.status, errText);
-      return res.status(502).json({ error: "benchmark llm error" });
+    if (!upstream.ok) {
+      const errText = await upstream.text().catch(() => "");
+      console.error("benchmark-score upstream error:", upstream.status, errText);
+      return res.status(502).json({ error: "benchmark upstream error" });
     }
  
-    const data = await llmRes.json();
+    const data = await upstream.json();
     const raw  = data?.choices?.[0]?.message?.content || "{}";
  
     let parsed;
@@ -1690,6 +1651,7 @@ Judge now. Remember: punctuation is NEVER an error. Return JSON only.`;
     res.status(500).json({ error: "benchmark score error" });
   }
 });
+ 
  
 // ===============================
 // REALTIME WEB PAGE (existing, model aligned)
