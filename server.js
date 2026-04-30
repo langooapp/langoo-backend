@@ -1508,120 +1508,210 @@ app.post("/pronunciation/benchmark-score", upload.single("audio"), async (req, r
       return res.status(400).json({ error: "Missing target" });
     }
  
-    // Safety cap — benchmark clips are short (<15 s of speech).
     if (req.file.buffer.length > 5_000_000) {
       return res.status(400).json({ error: "Audio too large" });
     }
  
     // ===============================================================
-    // v17.7.10 — REVERTED to gpt-4o-audio-preview with REAL phonetic
-    // analysis. The iOS client now records WAV/PCM 16 kHz mono
-    // (BaselineBenchmark.swift v17.7.10), so the audio model can
-    // decode the raw signal and judge phonemes directly. The previous
-    // Whisper+GPT chain was too lenient — Whisper transcribes "I love
-    // my dog" perfectly even with a heavy French accent, so first-time
-    // users were scoring 100/100 and could never see progression.
+    // v17.7.11 — Whisper (gpt-4o-mini-transcribe) + GPT-4o-mini
+    // chain with a BRUTAL grading prompt.
     //
-    // The prompt below is BRUTAL on purpose — Emma-grade. A first-time
-    // French speaker should typically score 45-70, never 100. 100 is
-    // reserved for genuine native or near-native delivery.
+    // Why this design:
+    //   - The audio model gpt-4o-audio-preview gives true phonetic
+    //     analysis but it does not reliably decode iOS M4A. Forcing
+    //     iOS to record WAV broke mic metering AND uploads.
+    //   - Whisper gladly accepts M4A, returns a clean transcript
+    //     even from a heavy French accent — but a clean transcript
+    //     alone tells us nothing about pronunciation.
+    //   - Trick: we ALSO request `verbose_json` from Whisper, which
+    //     returns segment-level avg_logprob and no_speech_prob. Low
+    //     avg_logprob = Whisper had to "stretch" to recognise the
+    //     audio = the speaker mumbled / had a strong accent. We feed
+    //     these signals to gpt-4o-mini, then bias the grading rubric
+    //     so a learner reading a target phrase fluently in French
+    //     accent lands 50-70 — never 100. 100 is reserved for
+    //     speakers Whisper transcribes effortlessly with very high
+    //     log-probabilities.
     // ===============================================================
  
-    const hint = (req.body.audio_format || "").toString().toLowerCase();
-    let fmt = "wav";
-    if (hint === "wav" || hint === "mp3") {
-      fmt = hint;
-    } else {
-      const mime = (req.file.mimetype || "").toLowerCase();
-      if      (mime.includes("wav")) fmt = "wav";
-      else if (mime.includes("mp3") || mime.includes("mpeg")) fmt = "mp3";
-      else                            fmt = "wav";
+    // ===== STEP 1: WHISPER with verbose_json =====
+    const sttForm = new FormData();
+    const audioBlob = new Blob([req.file.buffer], {
+      type: req.file.mimetype || "audio/m4a"
+    });
+    const fname = (req.file.originalname && req.file.originalname.trim())
+      ? req.file.originalname
+      : "benchmark.m4a";
+    sttForm.append("file", audioBlob, fname);
+    // whisper-1 supports verbose_json with logprobs/no_speech_prob.
+    // gpt-4o-mini-transcribe is cheaper but does not return logprobs,
+    // and we NEED logprobs to tell whether Whisper struggled.
+    sttForm.append("model", "whisper-1");
+    sttForm.append("response_format", "verbose_json");
+    sttForm.append("language", "en");
+    sttForm.append("temperature", "0");
+ 
+    const sttRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: sttForm
+    });
+ 
+    if (!sttRes.ok) {
+      const errText = await sttRes.text().catch(() => "");
+      console.error("benchmark-score STT upstream error:", sttRes.status, errText);
+      return res.status(502).json({ error: "benchmark stt error" });
     }
  
-    const audioB64 = req.file.buffer.toString("base64");
+    const sttData = await sttRes.json();
+    const transcript = (sttData?.text || "").trim();
+ 
+    // Aggregate phonetic-clarity signals from Whisper segments.
+    // avg_logprob: -0 is perfect, more negative = harder to decode.
+    //   Native speech tends to be -0.10 to -0.30.
+    //   Heavy accent / mumbling tends to be -0.60 to -1.20.
+    // no_speech_prob: 0 = clearly speech. >0.3 starts being suspicious.
+    const segments = Array.isArray(sttData?.segments) ? sttData.segments : [];
+    let avgLogProb  = 0;
+    let avgNoSpeech = 0;
+    if (segments.length > 0) {
+      let sumLP = 0, sumNS = 0;
+      for (const s of segments) {
+        sumLP += (typeof s.avg_logprob === "number") ? s.avg_logprob : 0;
+        sumNS += (typeof s.no_speech_prob === "number") ? s.no_speech_prob : 0;
+      }
+      avgLogProb  = sumLP / segments.length;
+      avgNoSpeech = sumNS / segments.length;
+    }
+    // Normalise the log-prob into a 0..100 "Whisper clarity" score.
+    // -0.10 → 95, -0.30 → 80, -0.60 → 55, -1.00 → 25, -1.50+ → 5.
+    const clarity = Math.max(
+      0,
+      Math.min(100, Math.round(100 + avgLogProb * 70))
+    );
+ 
+    if (!transcript || transcript.length < 2 || avgNoSpeech > 0.6) {
+      return res.json({
+        score: 5,
+        grade: "tourist",
+        feedback_native:
+          "Aucun son audible — réessaye en parlant plus fort, plus près du micro.",
+        feedback_english:
+          "No audio detected — try again, speak louder and closer to the mic."
+      });
+    }
+ 
+    // ===== STEP 2: BRUTAL SCORING via gpt-4o-mini =====
+    const stripPunct = (s) => (s || "")
+      .toLowerCase()
+      .replace(/[‘’]/g, "'")
+      .replace(/[\p{P}\p{S}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+ 
+    const cleanTarget     = stripPunct(target);
+    const cleanTranscript = stripPunct(transcript);
+ 
+    const targetWords     = cleanTarget.split(/\s+/).filter(Boolean);
+    const targetWordSet   = new Set(targetWords);
+    const transcriptWords = cleanTranscript.split(/\s+/).filter(Boolean);
+    let matched = 0;
+    for (const w of transcriptWords) if (targetWordSet.has(w)) matched++;
+    const wordMatchPct = targetWords.length > 0
+      ? Math.round((matched / targetWords.length) * 100)
+      : 0;
  
     const system =
-`You are the strictest phonetic pronunciation judge in the world for an English-learning app called Langoo. Think Cambridge phonetics examiner crossed with the Emma app's brutal accent coach. Your reputation is built on never inflating scores.
+`You are the strictest phonetic pronunciation judge in the world for a French-speaker learning English in an app called Langoo. Think Cambridge phonetics examiner crossed with Emma's brutal accent coach. Your reputation is built on never inflating scores.
  
-You receive RAW AUDIO (not a transcript). Use it to judge:
-- Individual phonemes: "th" (voiced/unvoiced), schwa, /r/ vs /l/, /v/ vs /w/, vowel length, final consonants.
-- Word stress and sentence stress — French speakers love to flatten English stress patterns.
-- Connected speech: linking, reductions, weak forms.
-- Rhythm, prosody, pacing.
-- Clarity, hesitation, false starts, mumbling.
-- Confidence, fluency, naturalness.
+You receive:
+- TARGET: the exact English phrase the user was asked to read.
+- TRANSCRIPT: what Whisper recognised from the user's voice.
+- WORD_MATCH_PERCENT: percent of target words found in transcript.
+- WHISPER_CLARITY: a 0-100 phonetic-clarity proxy derived from Whisper's
+  avg_logprob. 95 = effortless to decode (native-clean audio). 50-70 =
+  Whisper had to work for it (typical French accent). 25-40 = mumbled,
+  heavy accent, missing consonants.
+ 
+DEFAULT ASSUMPTION:
+The user is a French-native learner. UNLESS Whisper found the audio
+trivially clean (clarity >= 92 AND word match >= 95%), you must score
+them as a learner with at least *some* L1 interference. A clean
+transcript alone is NOT sufficient to award a high score — Whisper
+transcribes "I love my dog" perfectly even from a heavy accent.
  
 STRICT SCORING RUBRIC — YOU MUST FOLLOW THIS:
-- 0-15:  silent / garbled / completely wrong phrase / clip < 0.5 s.
-- 16-35: tourist. Says some words but with massive L1 interference. Hard to understand even for a patient native.
-- 36-55: learner-low. Recognisable but heavy French (or other L1) accent. "th" --> "s/z/d", flat stress, dropped final consonants.
-- 56-70: learner-high. Clear words, comprehensible, but accent is obvious. Some phonemes still off.
-- 71-82: speaker. Comfortable rhythm, most phonemes accurate, accent still detectable to natives.
-- 83-92: advanced speaker. Near-native rhythm and phonemes. Trained ear can still hear non-native.
-- 93-100: native or indistinguishable-from-native. RESERVE 100 for objectively perfect delivery.
+- 0-15:   silent / wrong phrase entirely / clip < 0.5 s.
+- 16-35:  tourist. Words barely recognisable, massive accent.
+- 36-55:  learner-low. Heavy French accent, "th" → "s/z", flat stress.
+- 56-70:  learner-high. Comprehensible, accent is obvious, some
+          phonemes still off.
+- 71-82:  speaker. Comfortable rhythm, accent detectable to natives.
+- 83-92:  advanced. Near-native rhythm and phonemes.
+- 93-100: native. Indistinguishable from a native speaker.
  
-CRITICAL ANTI-INFLATION RULES:
-1. Punctuation is NEVER spoken. Ignore it.
-2. If you can hear ANY non-native accent at all, the score CANNOT exceed 84.
-3. If you can clearly identify the speaker's L1 (French, Spanish, etc.) from one phrase, score CANNOT exceed 75.
-4. If "th" comes out as "s/z/d/t" even once, score drops 8 points minimum.
-5. If final consonants are dropped (typical French), score drops 5 points per occurrence.
-6. If word stress is misplaced (typical French), score drops 5-10 points.
-7. If the speaker said the wrong words / improvised: score <= 20.
-8. A first-time user who reads slowly but with a French accent should land 50-70, NEVER 90+.
-9. The user EXPECTS imperfection at first — they track progression month over month. An honest 60 today and a real 75 in 3 months is the product. A fake 100 today is a useless number.
-10. Be intellectually honest. If you can't tell — pick the LOWER score.
+ANTI-INFLATION RULES (apply ALL of them):
+1. WHISPER_CLARITY < 60  → score MUST be ≤ 65.
+2. WHISPER_CLARITY 60-79 → score MUST be ≤ 78.
+3. WHISPER_CLARITY 80-91 → score MUST be ≤ 88.
+4. WHISPER_CLARITY 92+ AND word_match 95%+ → up to 95 allowed.
+5. Score 100 is FORBIDDEN unless clarity ≥ 96 AND word_match = 100.
+6. If word_match < 70%, score MUST be ≤ 50 (they said wrong words).
+7. If you are unsure between two scores, ALWAYS pick the lower one.
+8. The user is tracking month-over-month progress. An honest 60 today
+   and a real 75 in 3 months is the product. A fake 100 is useless.
  
 OUTPUT FORMAT — STRICT JSON ONLY, no markdown fences:
 {
   "score": integer 0-100,
   "grade": one of "tourist" | "learner" | "speaker" | "native",
-  "feedback_native": one short sentence (max 22 words) in ${nativeLang}, brutally honest but constructive, naming ONE specific phonetic issue heard. Never shame, never praise generically.
+  "feedback_native": one short sentence (max 22 words) in ${nativeLang},
+    brutally honest but constructive. Name ONE specific phonetic issue
+    you suspect (the "th" sound, vowel length, final consonants, stress).
+    Tell them how to fix it (mouth shape, tongue position).
+    Never shame, never praise generically.
   "feedback_english": same in English (max 22 words).
 }
  
-Feedback style:
-- Name the EXACT phoneme, word, or stress pattern that failed.
-- Tell them EXACTLY how to fix it (mouth shape, tongue position, breath control).
-- If score 85+, praise the SPECIFIC thing that already sounds native.
-- Never say "good try" or "almost there".`;
+Never say "good try" or "almost there". Be specific.`;
  
-    const userText = `TARGET PHRASE: ${target}\n\nListen to the audio carefully. Apply the strict rubric. Return JSON only.`;
+    const userMsg =
+`TARGET: ${target}
+TARGET (compare form): ${cleanTarget}
  
-    const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
+TRANSCRIPT: ${transcript}
+TRANSCRIPT (compare form): ${cleanTranscript}
+ 
+WORD_MATCH_PERCENT: ${wordMatchPct}
+WHISPER_CLARITY: ${clarity}
+ 
+Apply the strict rubric. The default assumption is a French-native
+learner with audible L1 interference. Return JSON only.`;
+ 
+    const llmRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "gpt-4o-audio-preview",
-        modalities: ["text"],
-        temperature: 0.1,
+        model: "gpt-4o-mini",
+        temperature: 0.15,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: system },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: userText },
-              {
-                type: "input_audio",
-                input_audio: { data: audioB64, format: fmt }
-              }
-            ]
-          }
+          { role: "user",   content: userMsg }
         ]
       })
     });
  
-    if (!upstream.ok) {
-      const errText = await upstream.text().catch(() => "");
-      console.error("benchmark-score upstream error:", upstream.status, errText);
-      return res.status(502).json({ error: "benchmark upstream error" });
+    if (!llmRes.ok) {
+      const errText = await llmRes.text().catch(() => "");
+      console.error("benchmark-score LLM upstream error:", llmRes.status, errText);
+      return res.status(502).json({ error: "benchmark llm error" });
     }
  
-    const data = await upstream.json();
+    const data = await llmRes.json();
     const raw  = data?.choices?.[0]?.message?.content || "{}";
  
     let parsed;
@@ -1630,6 +1720,15 @@ Feedback style:
     let score = parseInt(parsed.score, 10);
     if (isNaN(score)) score = 0;
     score = Math.max(0, Math.min(100, score));
+ 
+    // Hard server-side cap to never trust the model fully on inflation.
+    if (clarity < 60 && score > 65) score = 65;
+    if (clarity < 80 && score > 78) score = 78;
+    if (clarity < 92 && score > 88) score = 88;
+    if (wordMatchPct < 70 && score > 50) score = 50;
+    if (clarity < 96 || wordMatchPct < 100) {
+      if (score > 95) score = 95;
+    }
  
     const grades = ["tourist", "learner", "speaker", "native"];
     let grade = grades.includes(parsed.grade) ? parsed.grade : null;
